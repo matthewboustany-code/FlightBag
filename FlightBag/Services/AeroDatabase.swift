@@ -64,6 +64,8 @@ final class AeroDatabase: Sendable {
         let name: String
         let city: String?
         let state: String?
+        var latitude: Double?
+        var longitude: Double?
 
         var displayIdentifier: String { icaoId ?? id }
     }
@@ -104,10 +106,11 @@ final class AeroDatabase: Sendable {
             try Row.fetchAll(
                 db,
                 sql: """
-                SELECT a.id, a.icao_id, a.name, a.city, a.state
+                SELECT a.id, a.icao_id, a.name, a.city, a.state, a.lat, a.lon
                 FROM airport_rtree r
                 JOIN airport a ON a.rowid = r.id
                 WHERE r.min_lat >= ? AND r.max_lat <= ? AND r.min_lon >= ? AND r.max_lon <= ?
+                  AND a.site_type = 'A'
                 ORDER BY (a.lat - ?) * (a.lat - ?) + (a.lon - ?) * (a.lon - ?)
                 LIMIT ?
                 """,
@@ -118,7 +121,11 @@ final class AeroDatabase: Sendable {
                     limit,
                 ]
             ).map { row in
-                SearchResult(id: row["id"], icaoId: row["icao_id"], name: row["name"], city: row["city"], state: row["state"])
+                SearchResult(
+                    id: row["id"], icaoId: row["icao_id"], name: row["name"],
+                    city: row["city"], state: row["state"],
+                    latitude: row["lat"], longitude: row["lon"]
+                )
             }
         }
     }

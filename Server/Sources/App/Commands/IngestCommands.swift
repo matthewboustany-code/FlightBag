@@ -90,6 +90,58 @@ struct IngestDTPPCommand: AsyncCommand {
     }
 }
 
+struct IngestTilesCommand: AsyncCommand {
+    struct Signature: CommandSignature {
+        @Option(name: "chart", help: "FAA chart file name, e.g. San_Antonio")
+        var chart: String?
+
+        @Option(name: "cycle", help: "AIRAC cycle id, e.g. 2607. Defaults to the current cycle.")
+        var cycle: String?
+
+        @Option(name: "workdir", help: "Directory for downloads and intermediate files. Defaults to .build/ingest")
+        var workdir: String?
+
+        @Option(name: "output", help: "MBTiles output path. Defaults to <workdir>/<chart>_sectional.mbtiles")
+        var output: String?
+
+        @Option(name: "gdal-bin", help: "Directory containing GDAL binaries. Defaults to $PATH lookup.")
+        var gdalBin: String?
+
+        init() {}
+    }
+
+    var help: String {
+        "Convert an FAA sectional chart into Web-Mercator MBTiles for offline map overlays"
+    }
+
+    func run(using context: CommandContext, signature: Signature) async throws {
+        guard let chart = signature.chart else {
+            throw Abort(.badRequest, reason: "--chart is required (e.g. --chart San_Antonio)")
+        }
+        let cycle: DataCycle
+        if let id = signature.cycle {
+            guard let parsed = DataCycle(id: id) else {
+                throw Abort(.badRequest, reason: "\(id) is not a valid AIRAC cycle identifier")
+            }
+            cycle = parsed
+        } else {
+            cycle = DataCycle.current()
+        }
+        let workDir = URL(fileURLWithPath: signature.workdir ?? ".build/ingest", isDirectory: true)
+        try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+        let output = signature.output ?? workDir.appendingPathComponent("\(chart)_sectional.mbtiles").path
+
+        let console = context.console
+        console.info("Tile pipeline: \(chart) sectional, cycle \(cycle.id)")
+        let pipeline = TilePipeline(
+            workDirectory: workDir,
+            gdalBinDirectory: signature.gdalBin
+        ) { console.info($0) }
+        try await pipeline.run(chart: chart, cycle: cycle, output: output)
+        console.success("Done: \(output)")
+    }
+}
+
 struct BuildManifestCommand: AsyncCommand {
     typealias Signature = IngestSignature
 
