@@ -1,0 +1,123 @@
+import SwiftUI
+import FBModels
+
+/// Live METAR/TAF with flight-category badge; falls back to the cached copy
+/// with an explicit age stamp when offline.
+struct WeatherSection: View {
+    let station: ICAOIdentifier
+
+    @Environment(AppEnvironment.self) private var environment
+    @State private var weather: WeatherStore.StationWeather?
+    @State private var isStale = false
+    @State private var isLoading = true
+
+    var body: some View {
+        Section {
+            if isLoading && weather == nil {
+                HStack {
+                    ProgressView()
+                    Text("Fetching weather…").foregroundStyle(.secondary)
+                }
+            } else if let metar = weather?.metar {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        if let category = metar.flightCategory {
+                            FlightCategoryBadge(category: category)
+                        }
+                        Spacer()
+                        ageStamp
+                    }
+                    Text(metar.raw)
+                        .font(.callout.monospaced())
+                        .textSelection(.enabled)
+                    decodedSummary(metar)
+                }
+                .padding(.vertical, 2)
+                if let taf = weather?.taf {
+                    DisclosureGroup("TAF") {
+                        Text(taf.raw)
+                            .font(.callout.monospaced())
+                            .textSelection(.enabled)
+                    }
+                }
+            } else {
+                Text("No weather reported for \(station.rawValue)")
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            HStack {
+                Text("Weather")
+                Spacer()
+                Button {
+                    Task { await refresh() }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .font(.caption)
+            }
+        }
+        .task(id: station) { await refresh() }
+    }
+
+    @ViewBuilder
+    private var ageStamp: some View {
+        if let fetchedAt = weather?.metar?.observationTime ?? weather?.fetchedAt {
+            Text(isStale ? "Cached · \(fetchedAt, style: .relative) ago" : "Observed \(fetchedAt, style: .relative) ago")
+                .font(.caption)
+                .foregroundStyle(isStale ? .orange : .secondary)
+        }
+    }
+
+    private func decodedSummary(_ metar: Metar) -> some View {
+        HStack(spacing: 16) {
+            if let direction = metar.windDirectionDegrees, let speed = metar.windSpeedKt {
+                let gust = metar.windGustKt.map { "G\($0)" } ?? ""
+                Label("\(String(format: "%03d", direction))° @ \(speed)\(gust) kt", systemImage: "wind")
+            } else if metar.windIsVariable, let speed = metar.windSpeedKt {
+                Label("VRB @ \(speed) kt", systemImage: "wind")
+            }
+            if let visibility = metar.visibilitySM {
+                Label("\(visibility.formatted())\(metar.visibilityIsAtLeast ? "+" : "") SM", systemImage: "eye")
+            }
+            if let temperature = metar.temperatureC {
+                Label("\(Int(temperature.rounded()))°C", systemImage: "thermometer.medium")
+            }
+            if let altimeter = metar.altimeterInHg {
+                Label(String(format: "%.2f", altimeter), systemImage: "gauge.with.needle")
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .labelStyle(.titleAndIcon)
+    }
+
+    private func refresh() async {
+        isLoading = true
+        let result = await environment.weatherStore.weather(for: station)
+        weather = result.weather
+        isStale = result.isStale
+        isLoading = false
+    }
+}
+
+struct FlightCategoryBadge: View {
+    let category: FlightCategory
+
+    var body: some View {
+        Text(category.rawValue)
+            .font(.caption.bold())
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.18), in: Capsule())
+            .foregroundStyle(color)
+    }
+
+    private var color: Color {
+        switch category {
+        case .vfr: .green
+        case .mvfr: .blue
+        case .ifr: .red
+        case .lifr: .purple
+        }
+    }
+}

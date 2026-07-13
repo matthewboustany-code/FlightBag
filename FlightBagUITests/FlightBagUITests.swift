@@ -2,42 +2,81 @@
 //  FlightBagUITests.swift
 //  FlightBagUITests
 //
-//  Created by Hannah Purvis on 7/12/26.
-//
 
 import XCTest
 
 final class FlightBagUITests: XCTestCase {
-
     override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
-
-        // In UI tests it is usually best to stop immediately when a failure occurs.
         continueAfterFailure = false
-
-        // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
-    }
-
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
+    func testSearchKAUSViewWeatherAndPlate() throws {
         let app = XCUIApplication()
+        // Pre-acknowledge the disclaimer via the argument defaults domain.
+        app.launchArguments += ["-hasAcknowledgedDisclaimer", "YES"]
         app.launch()
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        // XCUIAutomation Documentation
-        // https://developer.apple.com/documentation/xcuiautomation
+        // Search for KAUS in the Airports tab. On iPad the search starts as
+        // a toolbar button that reveals the field.
+        var searchField = app.searchFields.firstMatch
+        if !searchField.waitForExistence(timeout: 5) {
+            let searchButton = app.buttons["Search"].firstMatch
+            XCTAssertTrue(searchButton.waitForExistence(timeout: 10), "Search button should exist")
+            searchButton.tap()
+            searchField = app.searchFields.firstMatch
+            XCTAssertTrue(searchField.waitForExistence(timeout: 10), "Search field should appear after tapping Search")
+        }
+        searchField.tap()
+        searchField.typeText("KAUS")
+
+        let resultCell = app.cells.containing(.staticText, identifier: "KAUS").firstMatch
+        XCTAssertTrue(resultCell.waitForExistence(timeout: 10), "KAUS should appear in search results")
+        attachScreenshot(app, name: "1-search-results")
+        resultCell.tap()
+
+        // Airport detail: static airport data must be present immediately.
+        XCTAssertTrue(app.staticTexts["AUSTIN-BERGSTROM INTL"].waitForExistence(timeout: 10), "Airport name should display")
+        XCTAssertTrue(app.staticTexts["18R/36L"].waitForExistence(timeout: 5), "Runways should display")
+
+        // Live weather: raw METAR text contains the station id + Z-time group.
+        let metarText = app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "KAUS ")).firstMatch
+        XCTAssertTrue(metarText.waitForExistence(timeout: 20), "Live METAR should load")
+        attachScreenshot(app, name: "2-airport-detail")
+
+        // Open the approaches list and view a chart. The section is below the
+        // fold in the lazy list, so scroll until it materializes.
+        let approaches = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label BEGINSWITH %@", "Approaches")).firstMatch
+        for _ in 0..<6 where !approaches.exists {
+            app.swipeUp()
+        }
+        XCTAssertTrue(approaches.waitForExistence(timeout: 5), "Approaches group should exist")
+        approaches.tap()
+
+        let ilsChart = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS %@", "ILS OR LOC RWY 18L")).firstMatch
+        for _ in 0..<4 where !ilsChart.isHittable {
+            app.swipeUp()
+        }
+        XCTAssertTrue(ilsChart.waitForExistence(timeout: 5), "ILS 18L chart should be listed")
+        ilsChart.tap()
+
+        // The viewer must actually open (nav title) and the PDF fetches from
+        // FAA servers; allow generous time, then settle before the screenshot.
+        let viewerTitle = app.navigationBars.staticTexts.matching(
+            NSPredicate(format: "label CONTAINS %@", "ILS OR LOC RWY 18L")
+        ).firstMatch
+        XCTAssertTrue(viewerTitle.waitForExistence(timeout: 15), "Plate viewer should open")
+        sleep(8)
+        attachScreenshot(app, name: "3-plate-viewer")
     }
 
     @MainActor
-    func testLaunchPerformance() throws {
-        // This measures how long it takes to launch your application.
-        measure(metrics: [XCTApplicationLaunchMetric()]) {
-            XCUIApplication().launch()
-        }
+    private func attachScreenshot(_ app: XCUIApplication, name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 }

@@ -2,16 +2,26 @@
 //  FlightBagApp.swift
 //  FlightBag
 //
-//  Created by Hannah Purvis on 7/12/26.
-//
 
 import SwiftUI
+import SwiftData
 
 @main
 struct FlightBagApp: App {
+    @State private var environment = AppEnvironment()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootTabView()
+                .environment(environment)
         }
+        // Local container now; switches to CloudKit private-database sync
+        // later — the schema is already CloudKit-safe.
+        .modelContainer(for: [
+            Flight.self,
+            ClearanceRecord.self,
+            FlightDocument.self,
+            AircraftProfile.self,
+        ])
     }
 }

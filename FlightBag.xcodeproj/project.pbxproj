@@ -6,6 +6,14 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		FBC0DE000000000000000021 /* FBModels in Frameworks */ = {isa = PBXBuildFile; productRef = FBC0DE000000000000000011 /* FBModels */; };
+		FBC0DE000000000000000022 /* FBFlightPlan in Frameworks */ = {isa = PBXBuildFile; productRef = FBC0DE000000000000000012 /* FBFlightPlan */; };
+		FBC0DE000000000000000023 /* FBProviders in Frameworks */ = {isa = PBXBuildFile; productRef = FBC0DE000000000000000013 /* FBProviders */; };
+		FBC0DE000000000000000024 /* FBGDL90 in Frameworks */ = {isa = PBXBuildFile; productRef = FBC0DE000000000000000014 /* FBGDL90 */; };
+		FBC0DE000000000000000025 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = FBC0DE000000000000000015 /* GRDB */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		4247251330048F32002CF206 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -52,6 +60,11 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				FBC0DE000000000000000021 /* FBModels in Frameworks */,
+				FBC0DE000000000000000022 /* FBFlightPlan in Frameworks */,
+				FBC0DE000000000000000023 /* FBProviders in Frameworks */,
+				FBC0DE000000000000000024 /* FBGDL90 in Frameworks */,
+				FBC0DE000000000000000025 /* GRDB in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +125,11 @@
 			);
 			name = FlightBag;
 			packageProductDependencies = (
+				FBC0DE000000000000000011 /* FBModels */,
+				FBC0DE000000000000000012 /* FBFlightPlan */,
+				FBC0DE000000000000000013 /* FBProviders */,
+				FBC0DE000000000000000014 /* FBGDL90 */,
+				FBC0DE000000000000000015 /* GRDB */,
 			);
 			productName = FlightBag;
 			productReference = 4247250530048F30002CF206 /* FlightBag.app */;
@@ -195,6 +213,10 @@
 			);
 			mainGroup = 424724FC30048F30002CF206;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				FBC0DE000000000000000001 /* XCLocalSwiftPackageReference "Packages/FlightBagCore" */,
+				FBC0DE000000000000000002 /* XCRemoteSwiftPackageReference "GRDB" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 4247250630048F30002CF206 /* Products */;
 			projectDirPath = "";
@@ -615,6 +637,48 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		FBC0DE000000000000000001 /* XCLocalSwiftPackageReference "Packages/FlightBagCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/FlightBagCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		FBC0DE000000000000000002 /* XCRemoteSwiftPackageReference "GRDB" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/groue/GRDB.swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 7.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		FBC0DE000000000000000011 /* FBModels */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FBModels;
+		};
+		FBC0DE000000000000000012 /* FBFlightPlan */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FBFlightPlan;
+		};
+		FBC0DE000000000000000013 /* FBProviders */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FBProviders;
+		};
+		FBC0DE000000000000000014 /* FBGDL90 */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FBGDL90;
+		};
+		FBC0DE000000000000000015 /* GRDB */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FBC0DE000000000000000002 /* XCRemoteSwiftPackageReference "GRDB" */;
+			productName = GRDB;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 424724FD30048F30002CF206 /* Project object */;
 }
