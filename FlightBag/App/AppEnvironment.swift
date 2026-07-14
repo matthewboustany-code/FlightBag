@@ -20,6 +20,7 @@ final class AppEnvironment {
     let weatherStore: WeatherStore
     let plateStore: PlateStore
     let filingService: any FilingService
+    let advisoryStore = AdvisoryStore()
 
     /// Route drawn on the map tab; set from a flight, cleared from the map.
     var activeMapRoute: ActiveMapRoute?

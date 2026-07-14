@@ -63,6 +63,18 @@ final class MapLayersState {
     var radarOpacity = 0.7
     var airportsEnabled = true
 
+    // Advisory overlays. TFRs default on: busting one is a certificate
+    // action, so they surface unless the pilot opts out.
+    var tfrsEnabled = true
+    var sigmetsEnabled = false
+    var airmetSierraEnabled = false
+    var airmetTangoEnabled = false
+    var airmetZuluEnabled = false
+
+    var anyAdvisoryEnabled: Bool {
+        tfrsEnabled || sigmetsEnabled || airmetSierraEnabled || airmetTangoEnabled || airmetZuluEnabled
+    }
+
     /// Downloaded tile sets found on disk; refreshed when the map appears.
     var availableCharts: [ChartStore.ChartSet] = []
 

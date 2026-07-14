@@ -1,5 +1,6 @@
 import SwiftUI
 import MapKit
+import FBModels
 
 /// The EFB map screen: chart/radar layer stack, ownship, airport tap-through.
 struct MapHomeView: View {
@@ -10,6 +11,7 @@ struct MapHomeView: View {
     @State private var trackUp = false
     @State private var selectedAirportId: String?
     @State private var showLayersPanel = false
+    @State private var inspectedAdvisories: InspectedAdvisories?
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -19,7 +21,8 @@ struct MapHomeView: View {
                 route: environment.activeMapRoute,
                 followOwnship: $followOwnship,
                 trackUp: $trackUp,
-                onSelectAirport: { selectedAirportId = $0 }
+                onSelectAirport: { selectedAirportId = $0 },
+                onInspectAdvisories: { inspectedAdvisories = InspectedAdvisories(advisories: $0) }
             )
             .ignoresSafeArea(edges: .bottom)
 
@@ -68,6 +71,19 @@ struct MapHomeView: View {
             if let chart = defaults.string(forKey: "mapDemoChart") {
                 layers.chart = ChartKind(rawValue: chart)
             }
+            if defaults.bool(forKey: "mapDemoAdvisories") {
+                layers.sigmetsEnabled = true
+                layers.airmetSierraEnabled = true
+                layers.airmetTangoEnabled = true
+                layers.airmetZuluEnabled = true
+            }
+            if defaults.bool(forKey: "mapDemoPanel") { showLayersPanel = true }
+            if layers.anyAdvisoryEnabled {
+                await environment.advisoryStore.refreshIfStale()
+            }
+        }
+        .sheet(item: $inspectedAdvisories) { inspected in
+            AdvisoryInspectorSheet(advisories: inspected.advisories)
         }
         .sheet(item: $selectedAirportId) { airportId in
             NavigationStack {
@@ -137,6 +153,7 @@ extension String: @retroactive Identifiable {
 /// Layer toggles + opacity. Traffic and FIS-B join this panel in Phase 4.
 private struct LayersPanel: View {
     @Bindable var layers: MapLayersState
+    @Environment(AppEnvironment.self) private var environment
 
     var body: some View {
         Form {
@@ -175,11 +192,109 @@ private struct LayersPanel: View {
                         .foregroundStyle(.orange)
                 }
             }
+            Section {
+                advisoryToggle("TFRs", isOn: $layers.tfrsEnabled, category: .tfr, count: store.tfrs.reduce(0) { $0 + $1.areas.count })
+                advisoryToggle("SIGMETs", isOn: $layers.sigmetsEnabled, category: .sigmet, count: store.airSigmets.count)
+                advisoryToggle("AIRMET Sierra (IFR/Mtn)", isOn: $layers.airmetSierraEnabled, category: .airmetSierra, count: airmetCount(.sierra))
+                advisoryToggle("AIRMET Tango (Turb/Wind)", isOn: $layers.airmetTangoEnabled, category: .airmetTango, count: airmetCount(.tango))
+                advisoryToggle("AIRMET Zulu (Icing)", isOn: $layers.airmetZuluEnabled, category: .airmetZulu, count: airmetCount(.zulu))
+            } header: {
+                Text("Airspace & Advisories")
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let refreshed = store.lastRefresh {
+                        Text("Refreshed \(refreshed.formatted(date: .omitted, time: .shortened)). Tap an outlined area on the map for details.")
+                    }
+                    if let error = store.lastError {
+                        Text(error).foregroundStyle(.orange)
+                    }
+                    Text("Advisories require internet and can lag official sources. Always brief through Flight Service.")
+                        .foregroundStyle(.orange)
+                }
+                .font(.caption)
+            }
+
             Section("Airports") {
                 Toggle("Airport markers", isOn: $layers.airportsEnabled)
             }
         }
-        .frame(minWidth: 320, minHeight: 380)
+        .frame(minWidth: 340, minHeight: 640)
+        .task(id: layers.anyAdvisoryEnabled) {
+            if layers.anyAdvisoryEnabled {
+                await store.refreshIfStale()
+            }
+        }
+    }
+
+    private var store: AdvisoryStore { environment.advisoryStore }
+
+    private func airmetCount(_ product: GraphicalAirmet.Product) -> Int {
+        store.gAirmets.filter { $0.product == product && $0.isArea }.count
+    }
+
+    private func advisoryToggle(_ title: String, isOn: Binding<Bool>, category: AdvisoryCategory, count: Int) -> some View {
+        Toggle(isOn: isOn) {
+            HStack(spacing: 8) {
+                Circle()
+                    .fill(Color(category.strokeColor))
+                    .frame(width: 10, height: 10)
+                Text(title)
+                if isOn.wrappedValue, count > 0 {
+                    Text("\(count)")
+                        .font(.caption2.bold())
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color(category.strokeColor).opacity(0.2), in: Capsule())
+                }
+            }
+        }
+    }
+}
+
+/// Identifiable wrapper so tapped advisories drive a sheet.
+struct InspectedAdvisories: Identifiable {
+    let id = UUID()
+    var advisories: [AdvisoryDisplayInfo]
+}
+
+/// Details for advisories under a map tap.
+private struct AdvisoryInspectorSheet: View {
+    let advisories: [AdvisoryDisplayInfo]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List(advisories) { advisory in
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(Color(advisory.category.strokeColor))
+                            .frame(width: 10, height: 10)
+                        Text(advisory.title)
+                            .font(.headline)
+                    }
+                    if !advisory.subtitle.isEmpty {
+                        Text(advisory.subtitle)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !advisory.detail.isEmpty {
+                        Text(advisory.detail)
+                            .font(.callout.monospaced())
+                            .textSelection(.enabled)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            .navigationTitle(advisories.count == 1 ? "Advisory" : "\(advisories.count) Advisories")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
     }
 }
 

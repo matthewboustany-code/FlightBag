@@ -13,6 +13,7 @@ struct EFBMapView: UIViewRepresentable {
     @Binding var followOwnship: Bool
     @Binding var trackUp: Bool
     var onSelectAirport: (String) -> Void
+    var onInspectAdvisories: ([AdvisoryDisplayInfo]) -> Void = { _ in }
 
     @Environment(AppEnvironment.self) private var environment
 
@@ -23,10 +24,13 @@ struct EFBMapView: UIViewRepresentable {
         map.showsCompass = true
         map.pointOfInterestFilter = .excludingAll
         map.isPitchEnabled = false
+        // `-mapDemoSpan 24` widens the initial view for screenshot automation.
+        let demoSpan = UserDefaults.standard.double(forKey: "mapDemoSpan")
+        let span = demoSpan > 0 ? demoSpan : 2.2
         map.setRegion(
             MKCoordinateRegion(
-                center: CLLocationCoordinate2D(latitude: 30.19, longitude: -97.67),
-                span: MKCoordinateSpan(latitudeDelta: 2.2, longitudeDelta: 2.2)
+                center: CLLocationCoordinate2D(latitude: demoSpan > 0 ? 38.5 : 30.19, longitude: demoSpan > 0 ? -96 : -97.67),
+                span: MKCoordinateSpan(latitudeDelta: span, longitudeDelta: span)
             ),
             animated: false
         )
@@ -34,14 +38,21 @@ struct EFBMapView: UIViewRepresentable {
         map.register(OwnshipAnnotationView.self, forAnnotationViewWithReuseIdentifier: OwnshipAnnotationView.reuseId)
         context.coordinator.map = map
         context.coordinator.aeroDatabase = environment.aeroDatabase
+
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
+        tap.cancelsTouchesInView = false
+        tap.delegate = context.coordinator
+        map.addGestureRecognizer(tap)
         return map
     }
 
     func updateUIView(_ map: MKMapView, context: Context) {
         let coordinator = context.coordinator
         coordinator.onSelectAirport = onSelectAirport
+        coordinator.onInspectAdvisories = onInspectAdvisories
         coordinator.airportsEnabled = layers.airportsEnabled
         coordinator.syncOverlays(on: map, layers: layers)
+        coordinator.syncAdvisories(on: map, layers: layers, store: environment.advisoryStore)
         coordinator.syncRoute(on: map, route: route)
         coordinator.syncOwnship(on: map, position: position, followOwnship: followOwnship, trackUp: trackUp)
         if !layers.airportsEnabled {
@@ -56,15 +67,18 @@ struct EFBMapView: UIViewRepresentable {
     // MARK: Coordinator
 
     @MainActor
-    final class Coordinator: NSObject, MKMapViewDelegate {
+    final class Coordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate {
         weak var map: MKMapView?
         var aeroDatabase: AeroDatabase?
         var onSelectAirport: (String) -> Void = { _ in }
+        var onInspectAdvisories: ([AdvisoryDisplayInfo]) -> Void = { _ in }
         var airportsEnabled = true
 
         private var chartOverlays: [MKTileOverlay] = []
         private var chartKey: String?
         private var radarOverlay: MKTileOverlay?
+        private var advisoryOverlays: [AdvisoryPolygon] = []
+        private var advisoryKey: String?
         private var routePolyline: MKPolyline?
         private var routeKey: ActiveMapRoute?
         private var overlayAlphas: [ObjectIdentifier: CGFloat] = [:]
@@ -121,6 +135,44 @@ struct EFBMapView: UIViewRepresentable {
             }
         }
 
+        // MARK: Advisories
+
+        func syncAdvisories(on map: MKMapView, layers: MapLayersState, store: AdvisoryStore) {
+            let key = [
+                layers.tfrsEnabled, layers.sigmetsEnabled, layers.airmetSierraEnabled,
+                layers.airmetTangoEnabled, layers.airmetZuluEnabled,
+            ].map { $0 ? "1" : "0" }.joined() + "|\(store.dataVersion)"
+            guard key != advisoryKey else { return }
+            advisoryKey = key
+
+            map.removeOverlays(advisoryOverlays)
+            advisoryOverlays = AdvisoryOverlayBuilder.overlays(layers: layers, store: store)
+            map.addOverlays(advisoryOverlays, level: .aboveLabels)
+        }
+
+        @objc func handleTap(_ gesture: UITapGestureRecognizer) {
+            guard let map, !advisoryOverlays.isEmpty else { return }
+            let point = gesture.location(in: map)
+            // Let annotation taps win (they present the airport sheet).
+            if map.hitTest(point, with: nil) is MKAnnotationView { return }
+
+            let mapPoint = MKMapPoint(map.convert(point, toCoordinateFrom: map))
+            let hits = advisoryOverlays.compactMap { overlay -> AdvisoryDisplayInfo? in
+                guard overlay.boundingMapRect.contains(mapPoint),
+                      let renderer = map.renderer(for: overlay) as? MKPolygonRenderer,
+                      let path = renderer.path,
+                      path.contains(renderer.point(for: mapPoint)) else { return nil }
+                return overlay.info
+            }
+            if !hits.isEmpty {
+                onInspectAdvisories(hits)
+            }
+        }
+
+        nonisolated func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+            true
+        }
+
         // MARK: Route
 
         func syncRoute(on map: MKMapView, route: ActiveMapRoute?) {
@@ -152,6 +204,14 @@ struct EFBMapView: UIViewRepresentable {
         }
 
         nonisolated func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            if let advisory = overlay as? AdvisoryPolygon {
+                let renderer = MKPolygonRenderer(polygon: advisory)
+                let category = MainActor.assumeIsolated { advisory.info?.category } ?? .sigmet
+                renderer.strokeColor = category.strokeColor
+                renderer.fillColor = category.strokeColor.withAlphaComponent(category.fillAlpha)
+                renderer.lineWidth = 2
+                return renderer
+            }
             if let polyline = overlay as? MKPolyline {
                 // EFB convention: the planned course line is magenta.
                 let renderer = MKPolylineRenderer(polyline: polyline)
