@@ -239,6 +239,106 @@ final class AeroDatabase: Sendable {
     }
 }
 
+// MARK: Aeronautical map layer queries
+
+extension AeroDatabase {
+    struct MapWaypoint: Sendable, Hashable, Identifiable {
+        enum Kind: Sendable, Hashable {
+            case navaid(type: String?)
+            case fix
+        }
+
+        var id: String { "\(identifier)-\(latitude)-\(longitude)" }
+        var identifier: String
+        var name: String?
+        var kind: Kind
+        var latitude: Double
+        var longitude: Double
+    }
+
+    struct AirwayLine: Sendable, Hashable, Identifiable {
+        var id: String { ident }
+        var ident: String
+        /// Jet/Q routes (18,000 ft and up) vs victor/T low structure.
+        var isHigh: Bool
+        var coordinates: [Coordinate]
+    }
+
+    func navaidsIn(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double, limit: Int = 80) async throws -> [MapWaypoint] {
+        try await dbQueue.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT id, type, name, lat, lon FROM navaid
+                WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?
+                LIMIT ?
+                """,
+                arguments: [minLat, maxLat, minLon, maxLon, limit]
+            ).map { row in
+                MapWaypoint(identifier: row["id"], name: row["name"], kind: .navaid(type: row["type"]), latitude: row["lat"], longitude: row["lon"])
+            }
+        }
+    }
+
+    func fixesIn(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double, limit: Int = 150) async throws -> [MapWaypoint] {
+        try await dbQueue.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT id, lat, lon FROM fix
+                WHERE lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?
+                LIMIT ?
+                """,
+                arguments: [minLat, maxLat, minLon, maxLon, limit]
+            ).map { row in
+                MapWaypoint(identifier: row["id"], name: nil, kind: .fix, latitude: row["lat"], longitude: row["lon"])
+            }
+        }
+    }
+
+    /// Airways with at least one point in the box, each returned complete so
+    /// the polyline doesn't stop at the screen edge.
+    func airwaysIn(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double, limit: Int = 60) async throws -> [AirwayLine] {
+        guard schemaVersion >= 2 else { return [] }
+        return try await dbQueue.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                SELECT p.airway_id, a.designation, p.seq, p.lat, p.lon
+                FROM airway_point p
+                JOIN airway a ON a.id = p.airway_id AND a.location = p.location
+                WHERE p.location = 'C' AND p.lat IS NOT NULL AND p.airway_id IN (
+                    SELECT DISTINCT airway_id FROM airway_point
+                    WHERE location = 'C' AND lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?
+                    LIMIT ?
+                )
+                ORDER BY p.airway_id, p.seq
+                """,
+                arguments: [minLat, maxLat, minLon, maxLon, limit]
+            )
+            var lines: [String: (designation: String?, points: [Coordinate])] = [:]
+            var order: [String] = []
+            for row in rows {
+                let ident: String = row["airway_id"]
+                if lines[ident] == nil {
+                    lines[ident] = (row["designation"], [])
+                    order.append(ident)
+                }
+                lines[ident]?.points.append(Coordinate(latitude: row["lat"], longitude: row["lon"]))
+            }
+            return order.compactMap { ident in
+                guard let line = lines[ident], line.points.count >= 2 else { return nil }
+                let designation = (line.designation ?? "").uppercased()
+                return AirwayLine(
+                    ident: ident,
+                    isHigh: designation == "J" || designation == "Q",
+                    coordinates: line.points
+                )
+            }
+        }
+    }
+}
+
 // MARK: Route waypoint resolution
 
 extension AeroDatabase: WaypointResolving {

@@ -37,23 +37,29 @@ enum AdvisoryCategory: String, CaseIterable, Identifiable {
     }
 }
 
-/// What a tapped advisory shows in the inspector sheet.
+/// What a tapped advisory or airspace shows in the inspector sheet.
 struct AdvisoryDisplayInfo: Identifiable, Hashable {
     var id = UUID()
-    var category: AdvisoryCategory
+    var color: UIColor
     var title: String
     var subtitle: String
     var detail: String
 }
 
-/// MKPolygon carrying its advisory so tap-to-inspect can surface details.
+/// MKPolygon carrying its own rendering style plus details for
+/// tap-to-inspect. Used by both hazard advisories and airspace volumes.
 final class AdvisoryPolygon: MKPolygon {
     var info: AdvisoryDisplayInfo?
+    var strokeColor: UIColor = .systemOrange
+    var fillAlpha: CGFloat = 0.10
+    var isDashed = false
 
-    static func make(coordinates: [Coordinate], info: AdvisoryDisplayInfo) -> AdvisoryPolygon {
+    static func make(coordinates: [Coordinate], category: AdvisoryCategory, title: String, subtitle: String, detail: String) -> AdvisoryPolygon {
         var points = coordinates.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
         let polygon = AdvisoryPolygon(coordinates: &points, count: points.count)
-        polygon.info = info
+        polygon.strokeColor = category.strokeColor
+        polygon.fillAlpha = category.fillAlpha
+        polygon.info = AdvisoryDisplayInfo(color: category.strokeColor, title: title, subtitle: subtitle, detail: detail)
         return polygon
     }
 }
@@ -70,12 +76,10 @@ enum AdvisoryOverlayBuilder {
                     let limits = [area.floorText, area.ceilingText].compactMap(\.self).joined(separator: " – ")
                     result.append(AdvisoryPolygon.make(
                         coordinates: area.polygon,
-                        info: AdvisoryDisplayInfo(
-                            category: .tfr,
-                            title: "TFR \(tfr.id)\(tfr.type.map { " · \($0)" } ?? "")",
-                            subtitle: [area.name, limits.isEmpty ? nil : limits].compactMap(\.self).joined(separator: " · "),
-                            detail: tfr.description
-                        )
+                        category: .tfr,
+                        title: "TFR \(tfr.id)\(tfr.type.map { " · \($0)" } ?? "")",
+                        subtitle: [area.name, limits.isEmpty ? nil : limits].compactMap(\.self).joined(separator: " · "),
+                        detail: tfr.description
                     ))
                 }
             }
@@ -89,13 +93,11 @@ enum AdvisoryOverlayBuilder {
                 ].compactMap(\.self).joined(separator: " ")
                 result.append(AdvisoryPolygon.make(
                     coordinates: advisory.polygon,
-                    info: AdvisoryDisplayInfo(
-                        category: .sigmet,
-                        title: "\(advisory.kind.rawValue) · \(advisory.hazard)",
-                        subtitle: [altitudes.isEmpty ? nil : altitudes, "until \(Self.time(advisory.validTo))"]
-                            .compactMap(\.self).joined(separator: " · "),
-                        detail: advisory.rawText
-                    )
+                    category: .sigmet,
+                    title: "\(advisory.kind.rawValue) · \(advisory.hazard)",
+                    subtitle: [altitudes.isEmpty ? nil : altitudes, "until \(Self.time(advisory.validTo))"]
+                        .compactMap(\.self).joined(separator: " · "),
+                    detail: advisory.rawText
                 ))
             }
         }
@@ -114,16 +116,14 @@ enum AdvisoryOverlayBuilder {
                 ].compactMap(\.self).joined(separator: " · ")
                 result.append(AdvisoryPolygon.make(
                     coordinates: airmet.polygon,
-                    info: AdvisoryDisplayInfo(
-                        category: category,
-                        title: "G-AIRMET \(airmet.product.rawValue.capitalized) · \(airmet.hazard)",
-                        subtitle: [
-                            altitudes.isEmpty ? nil : altitudes,
-                            airmet.severity.map { "severity \($0)" },
-                            "until \(Self.time(airmet.expireTime))",
-                        ].compactMap(\.self).joined(separator: " · "),
-                        detail: airmet.dueTo.map { "Due to: \($0)" } ?? ""
-                    )
+                    category: category,
+                    title: "G-AIRMET \(airmet.product.rawValue.capitalized) · \(airmet.hazard)",
+                    subtitle: [
+                        altitudes.isEmpty ? nil : altitudes,
+                        airmet.severity.map { "severity \($0)" },
+                        "until \(Self.time(airmet.expireTime))",
+                    ].compactMap(\.self).joined(separator: " · "),
+                    detail: airmet.dueTo.map { "Due to: \($0)" } ?? ""
                 ))
             }
         }

@@ -77,6 +77,12 @@ struct MapHomeView: View {
                 layers.airmetTangoEnabled = true
                 layers.airmetZuluEnabled = true
             }
+            if defaults.bool(forKey: "mapDemoAero") {
+                layers.waypointsEnabled = true
+                layers.airwaysLowEnabled = true
+                layers.airwaysHighEnabled = true
+                layers.enabledAirspaceCategories = Set(Airspace.Category.allCases)
+            }
             if defaults.bool(forKey: "mapDemoPanel") { showLayersPanel = true }
             if layers.anyAdvisoryEnabled {
                 await environment.advisoryStore.refreshIfStale()
@@ -193,6 +199,33 @@ private struct LayersPanel: View {
                 }
             }
             Section {
+                Toggle("Airports", isOn: $layers.airportsEnabled)
+                Toggle("Waypoints (navaids & fixes)", isOn: $layers.waypointsEnabled)
+                Toggle("Airways — Victor/T (low)", isOn: $layers.airwaysLowEnabled)
+                Toggle("Airways — Jet/Q (high)", isOn: $layers.airwaysHighEnabled)
+                ForEach(Airspace.Category.allCases, id: \.self) { category in
+                    Toggle(isOn: airspaceBinding(category)) {
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(Color(category.strokeColor))
+                                .frame(width: 10, height: 10)
+                            Text("\(category.displayName) airspace")
+                        }
+                    }
+                }
+            } header: {
+                Text("Aeronautical")
+            } footer: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Waypoints and airways come from the offline database; airspace boundaries stream from FAA services per view. Zoom in to reveal fixes.")
+                    if let error = environment.airspaceStore.lastError {
+                        Text(error).foregroundStyle(.orange)
+                    }
+                }
+                .font(.caption)
+            }
+
+            Section {
                 advisoryToggle("TFRs", isOn: $layers.tfrsEnabled, category: .tfr, count: store.tfrs.reduce(0) { $0 + $1.areas.count })
                 advisoryToggle("SIGMETs", isOn: $layers.sigmetsEnabled, category: .sigmet, count: store.airSigmets.count)
                 advisoryToggle("AIRMET Sierra (IFR/Mtn)", isOn: $layers.airmetSierraEnabled, category: .airmetSierra, count: airmetCount(.sierra))
@@ -214,9 +247,6 @@ private struct LayersPanel: View {
                 .font(.caption)
             }
 
-            Section("Airports") {
-                Toggle("Airport markers", isOn: $layers.airportsEnabled)
-            }
         }
         .frame(minWidth: 340, minHeight: 640)
         .task(id: layers.anyAdvisoryEnabled) {
@@ -227,6 +257,19 @@ private struct LayersPanel: View {
     }
 
     private var store: AdvisoryStore { environment.advisoryStore }
+
+    private func airspaceBinding(_ category: Airspace.Category) -> Binding<Bool> {
+        Binding(
+            get: { layers.enabledAirspaceCategories.contains(category) },
+            set: { enabled in
+                if enabled {
+                    layers.enabledAirspaceCategories.insert(category)
+                } else {
+                    layers.enabledAirspaceCategories.remove(category)
+                }
+            }
+        )
+    }
 
     private func airmetCount(_ product: GraphicalAirmet.Product) -> Int {
         store.gAirmets.filter { $0.product == product && $0.isArea }.count
@@ -268,7 +311,7 @@ private struct AdvisoryInspectorSheet: View {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 8) {
                         Circle()
-                            .fill(Color(advisory.category.strokeColor))
+                            .fill(Color(advisory.color))
                             .frame(width: 10, height: 10)
                         Text(advisory.title)
                             .font(.headline)

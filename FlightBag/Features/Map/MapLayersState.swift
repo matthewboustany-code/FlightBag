@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import FBModels
 
 /// An aeronautical chart type the map can display. Each kind renders from
 /// downloaded MBTiles when available, otherwise it streams from the FAA's
@@ -62,6 +63,17 @@ final class MapLayersState {
     var radarEnabled = false
     var radarOpacity = 0.7
     var airportsEnabled = true
+
+    // Aeronautical vector layer, drawn over the chart from the offline
+    // database (waypoints, airways) and FAA airspace services.
+    var waypointsEnabled = false
+    var airwaysLowEnabled = false
+    var airwaysHighEnabled = false
+    var enabledAirspaceCategories: Set<Airspace.Category> = []
+
+    var anyAeronauticalEnabled: Bool {
+        waypointsEnabled || airwaysLowEnabled || airwaysHighEnabled || !enabledAirspaceCategories.isEmpty
+    }
 
     // Advisory overlays. TFRs default on: busting one is a certificate
     // action, so they surface unless the pilot opts out.

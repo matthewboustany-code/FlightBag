@@ -24,20 +24,23 @@ struct EFBMapView: UIViewRepresentable {
         map.showsCompass = true
         map.pointOfInterestFilter = .excludingAll
         map.isPitchEnabled = false
-        // `-mapDemoSpan 24` widens the initial view for screenshot automation.
+        // `-mapDemoSpan 24` adjusts the initial view for screenshot
+        // automation (wide spans recenter on the whole US).
         let demoSpan = UserDefaults.standard.double(forKey: "mapDemoSpan")
         let span = demoSpan > 0 ? demoSpan : 2.2
         map.setRegion(
             MKCoordinateRegion(
-                center: CLLocationCoordinate2D(latitude: demoSpan > 0 ? 38.5 : 30.19, longitude: demoSpan > 0 ? -96 : -97.67),
+                center: CLLocationCoordinate2D(latitude: demoSpan > 10 ? 38.5 : 30.19, longitude: demoSpan > 10 ? -96 : -97.67),
                 span: MKCoordinateSpan(latitudeDelta: span, longitudeDelta: span)
             ),
             animated: false
         )
         map.register(AirportAnnotationView.self, forAnnotationViewWithReuseIdentifier: AirportAnnotationView.reuseId)
         map.register(OwnshipAnnotationView.self, forAnnotationViewWithReuseIdentifier: OwnshipAnnotationView.reuseId)
+        map.register(WaypointAnnotationView.self, forAnnotationViewWithReuseIdentifier: WaypointAnnotationView.reuseId)
         context.coordinator.map = map
         context.coordinator.aeroDatabase = environment.aeroDatabase
+        context.coordinator.airspaceStore = environment.airspaceStore
 
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
         tap.cancelsTouchesInView = false
@@ -51,8 +54,10 @@ struct EFBMapView: UIViewRepresentable {
         coordinator.onSelectAirport = onSelectAirport
         coordinator.onInspectAdvisories = onInspectAdvisories
         coordinator.airportsEnabled = layers.airportsEnabled
+        coordinator.layersState = layers
         coordinator.syncOverlays(on: map, layers: layers)
         coordinator.syncAdvisories(on: map, layers: layers, store: environment.advisoryStore)
+        coordinator.refreshAeronautical(on: map)
         coordinator.syncRoute(on: map, route: route)
         coordinator.syncOwnship(on: map, position: position, followOwnship: followOwnship, trackUp: trackUp)
         if !layers.airportsEnabled {
@@ -70,6 +75,8 @@ struct EFBMapView: UIViewRepresentable {
     final class Coordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate {
         weak var map: MKMapView?
         var aeroDatabase: AeroDatabase?
+        var airspaceStore: AirspaceStore?
+        var layersState: MapLayersState?
         var onSelectAirport: (String) -> Void = { _ in }
         var onInspectAdvisories: ([AdvisoryDisplayInfo]) -> Void = { _ in }
         var airportsEnabled = true
@@ -79,6 +86,11 @@ struct EFBMapView: UIViewRepresentable {
         private var radarOverlay: MKTileOverlay?
         private var advisoryOverlays: [AdvisoryPolygon] = []
         private var advisoryKey: String?
+        private var waypointAnnotations: [WaypointAnnotation] = []
+        private var airwayPolylines: [AirwayPolyline] = []
+        private var airspaceOverlays: [AdvisoryPolygon] = []
+        private var aeroKey: String?
+        private var aeroTask: Task<Void, Never>?
         private var routePolyline: MKPolyline?
         private var routeKey: ActiveMapRoute?
         private var overlayAlphas: [ObjectIdentifier: CGFloat] = [:]
@@ -135,6 +147,87 @@ struct EFBMapView: UIViewRepresentable {
             }
         }
 
+        // MARK: Aeronautical vector layer
+
+        /// Waypoints, airways, and airspace for the current viewport,
+        /// re-queried when the region or toggles change. Density is gated by
+        /// zoom so a whole-country view never tries to draw 70k fixes.
+        func refreshAeronautical(on map: MKMapView) {
+            guard let layers = layersState else { return }
+            let region = map.region
+            let key = String(
+                format: "%.2f,%.2f,%.2f|%@%@%@|%@",
+                region.center.latitude, region.center.longitude, region.span.latitudeDelta,
+                layers.waypointsEnabled ? "1" : "0",
+                layers.airwaysLowEnabled ? "1" : "0",
+                layers.airwaysHighEnabled ? "1" : "0",
+                layers.enabledAirspaceCategories.map(\.rawValue).sorted().joined()
+            )
+            guard key != aeroKey else { return }
+            aeroKey = key
+
+            let span = max(region.span.latitudeDelta, region.span.longitudeDelta)
+            let box = (
+                minLat: region.center.latitude - region.span.latitudeDelta / 2,
+                maxLat: region.center.latitude + region.span.latitudeDelta / 2,
+                minLon: region.center.longitude - region.span.longitudeDelta / 2,
+                maxLon: region.center.longitude + region.span.longitudeDelta / 2
+            )
+
+            aeroTask?.cancel()
+            aeroTask = Task { [weak self, weak map] in
+                // Debounce: pans/zooms retrigger rapidly, and the airspace
+                // service is rate-limited — only the settled region fetches.
+                try? await Task.sleep(for: .milliseconds(350))
+                guard !Task.isCancelled, let self, let map, let layers = self.layersState else { return }
+                let db = self.aeroDatabase
+
+                var waypoints: [AeroDatabase.MapWaypoint] = []
+                if layers.waypointsEnabled, span < 5, let db {
+                    waypoints += (try? await db.navaidsIn(minLat: box.minLat, maxLat: box.maxLat, minLon: box.minLon, maxLon: box.maxLon)) ?? []
+                    if span < 1.6 {
+                        waypoints += (try? await db.fixesIn(minLat: box.minLat, maxLat: box.maxLat, minLon: box.minLon, maxLon: box.maxLon)) ?? []
+                    }
+                }
+
+                var airways: [AeroDatabase.AirwayLine] = []
+                if (layers.airwaysLowEnabled || layers.airwaysHighEnabled), span < 6, let db {
+                    let all = (try? await db.airwaysIn(minLat: box.minLat, maxLat: box.maxLat, minLon: box.minLon, maxLon: box.maxLon)) ?? []
+                    airways = all.filter { $0.isHigh ? layers.airwaysHighEnabled : layers.airwaysLowEnabled }
+                }
+
+                // nil = fetch failed: keep the previous boundaries on screen.
+                var airspaces: [Airspace]? = []
+                if !layers.enabledAirspaceCategories.isEmpty, span < 8, let store = self.airspaceStore {
+                    airspaces = await store.airspaces(
+                        categories: layers.enabledAirspaceCategories,
+                        minLat: box.minLat, maxLat: box.maxLat, minLon: box.minLon, maxLon: box.maxLon
+                    )
+                }
+
+                guard !Task.isCancelled else { return }
+                self.apply(waypoints: waypoints, airways: airways, airspaces: airspaces, on: map)
+            }
+        }
+
+        private func apply(waypoints: [AeroDatabase.MapWaypoint], airways: [AeroDatabase.AirwayLine], airspaces: [Airspace]?, on map: MKMapView) {
+            map.removeAnnotations(waypointAnnotations)
+            waypointAnnotations = waypoints.map(WaypointAnnotation.init)
+            map.addAnnotations(waypointAnnotations)
+
+            map.removeOverlays(airwayPolylines)
+            airwayPolylines = airways.map(AirwayPolyline.make)
+            map.addOverlays(airwayPolylines, level: .aboveLabels)
+
+            if let airspaces {
+                map.removeOverlays(airspaceOverlays)
+                airspaceOverlays = airspaces.flatMap { airspace in
+                    airspace.polygons.map { AdvisoryPolygon.makeAirspace(ring: $0, airspace: airspace) }
+                }
+                map.addOverlays(airspaceOverlays, level: .aboveLabels)
+            }
+        }
+
         // MARK: Advisories
 
         func syncAdvisories(on map: MKMapView, layers: MapLayersState, store: AdvisoryStore) {
@@ -151,13 +244,15 @@ struct EFBMapView: UIViewRepresentable {
         }
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
-            guard let map, !advisoryOverlays.isEmpty else { return }
+            guard let map else { return }
+            let tappable = advisoryOverlays + airspaceOverlays
+            guard !tappable.isEmpty else { return }
             let point = gesture.location(in: map)
             // Let annotation taps win (they present the airport sheet).
             if map.hitTest(point, with: nil) is MKAnnotationView { return }
 
             let mapPoint = MKMapPoint(map.convert(point, toCoordinateFrom: map))
-            let hits = advisoryOverlays.compactMap { overlay -> AdvisoryDisplayInfo? in
+            let hits = tappable.compactMap { overlay -> AdvisoryDisplayInfo? in
                 guard overlay.boundingMapRect.contains(mapPoint),
                       let renderer = map.renderer(for: overlay) as? MKPolygonRenderer,
                       let path = renderer.path,
@@ -206,10 +301,24 @@ struct EFBMapView: UIViewRepresentable {
         nonisolated func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let advisory = overlay as? AdvisoryPolygon {
                 let renderer = MKPolygonRenderer(polygon: advisory)
-                let category = MainActor.assumeIsolated { advisory.info?.category } ?? .sigmet
-                renderer.strokeColor = category.strokeColor
-                renderer.fillColor = category.strokeColor.withAlphaComponent(category.fillAlpha)
+                let (stroke, fillAlpha, dashed) = MainActor.assumeIsolated {
+                    (advisory.strokeColor, advisory.fillAlpha, advisory.isDashed)
+                }
+                renderer.strokeColor = stroke
+                renderer.fillColor = stroke.withAlphaComponent(fillAlpha)
                 renderer.lineWidth = 2
+                if dashed {
+                    renderer.lineDashPattern = [6, 5]
+                }
+                return renderer
+            }
+            if let airway = overlay as? AirwayPolyline {
+                let renderer = MKPolylineRenderer(polyline: airway)
+                let isHigh = MainActor.assumeIsolated { airway.isHigh }
+                renderer.strokeColor = isHigh
+                    ? UIColor.systemGray.withAlphaComponent(0.8)
+                    : UIColor.systemBlue.withAlphaComponent(0.55)
+                renderer.lineWidth = 1.5
                 return renderer
             }
             if let polyline = overlay as? MKPolyline {
@@ -257,7 +366,10 @@ struct EFBMapView: UIViewRepresentable {
         // MARK: Airport annotations
 
         nonisolated func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
-            MainActor.assumeIsolated { refreshAirportAnnotations(on: mapView) }
+            MainActor.assumeIsolated {
+                refreshAirportAnnotations(on: mapView)
+                refreshAeronautical(on: mapView)
+            }
         }
 
         func clearAirportAnnotations(on map: MKMapView) {
@@ -309,6 +421,9 @@ struct EFBMapView: UIViewRepresentable {
                 }
                 if annotation is AirportAnnotation {
                     return mapView.dequeueReusableAnnotationView(withIdentifier: AirportAnnotationView.reuseId, for: annotation)
+                }
+                if annotation is WaypointAnnotation {
+                    return mapView.dequeueReusableAnnotationView(withIdentifier: WaypointAnnotationView.reuseId, for: annotation)
                 }
                 return nil
             }

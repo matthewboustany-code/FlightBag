@@ -21,6 +21,7 @@ final class AppEnvironment {
     let plateStore: PlateStore
     let filingService: any FilingService
     let advisoryStore = AdvisoryStore()
+    let airspaceStore = AirspaceStore()
 
     /// Route drawn on the map tab; set from a flight, cleared from the map.
     var activeMapRoute: ActiveMapRoute?
