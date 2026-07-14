@@ -120,14 +120,18 @@ import FBModels
 @Suite struct RouteParserTests {
     struct FakeResolver: WaypointResolving {
         let waypoints: [String: ResolvedWaypoint]
-        let airways: Set<String>
+        let airways: [String: [ResolvedWaypoint]]
 
         func resolveWaypoint(identifier: String) async throws -> ResolvedWaypoint? {
             waypoints[identifier]
         }
 
         func isAirway(identifier: String) async throws -> Bool {
-            airways.contains(identifier)
+            airways[identifier] != nil
+        }
+
+        func airwayPoints(identifier: String) async throws -> [ResolvedWaypoint] {
+            airways[identifier] ?? []
         }
     }
 
@@ -138,15 +142,93 @@ import FBModels
                 "CWK": ResolvedWaypoint(identifier: "CWK", coordinate: Coordinate(latitude: 30.38, longitude: -97.53), kind: .navaid),
                 "KDAL": ResolvedWaypoint(identifier: "KDAL", coordinate: Coordinate(latitude: 32.85, longitude: -96.85), kind: .airport),
             ],
-            airways: ["V163"]
+            airways: ["V163": []]
         )
         let parsed = try await RouteParser(resolver: resolver).parse("KAUS CWK V163 BOGUS DCT KDAL")
 
         #expect(parsed.waypoints.map(\.identifier) == ["KAUS", "CWK", "KDAL"])
         #expect(parsed.unresolvedIdentifiers == ["BOGUS"])
-        #expect(parsed.elements.contains(.airway("V163")))
+        #expect(parsed.elements.contains(.airway("V163", via: [])))
         #expect(parsed.elements.contains(.direct))
         #expect(parsed.distanceNM > 100)
+    }
+
+    @Test func expandsAirwayBetweenEntryAndExit() async throws {
+        func wp(_ id: String, _ lat: Double, _ lon: Double, _ kind: ResolvedWaypoint.Kind = .fix) -> ResolvedWaypoint {
+            ResolvedWaypoint(identifier: id, coordinate: Coordinate(latitude: lat, longitude: lon), kind: kind)
+        }
+        let airwayPoints = [
+            wp("MAM", 25.9, -97.4, .navaid),
+            wp("GROSZ", 26.4, -97.5),
+            wp("BRO", 25.9, -97.4, .navaid),
+            wp("CWK", 30.38, -97.53, .navaid),
+            wp("SOLDO", 31.0, -97.4),
+            wp("LOA", 31.6, -97.2, .navaid),
+            wp("YEAGR", 32.2, -97.0),
+        ]
+        let resolver = FakeResolver(
+            waypoints: [
+                "CWK": wp("CWK", 30.38, -97.53, .navaid),
+                "LOA": wp("LOA", 31.6, -97.2, .navaid),
+            ],
+            airways: ["V163": airwayPoints]
+        )
+
+        // Forward: entry before exit on the airway.
+        let forward = try await RouteParser(resolver: resolver).parse("CWK V163 LOA")
+        #expect(forward.waypoints.map(\.identifier) == ["CWK", "SOLDO", "LOA"])
+
+        // Reverse: flown against the airway's published direction.
+        let reverse = try await RouteParser(resolver: resolver).parse("LOA V163 CWK")
+        #expect(reverse.waypoints.map(\.identifier) == ["LOA", "SOLDO", "CWK"])
+    }
+
+    @Test func airwayWithoutBracketingWaypointsStaysUnexpanded() async throws {
+        let resolver = FakeResolver(
+            waypoints: [:],
+            airways: ["V163": [ResolvedWaypoint(identifier: "CWK", coordinate: Coordinate(latitude: 30, longitude: -97), kind: .navaid)]]
+        )
+        let parsed = try await RouteParser(resolver: resolver).parse("V163")
+        #expect(parsed.elements == [.airway("V163", via: [])])
+    }
+}
+
+@Suite struct NavLogBuilderTests {
+    private func route() -> ParsedRoute {
+        func wp(_ id: String, _ lat: Double, _ lon: Double) -> ResolvedWaypoint {
+            ResolvedWaypoint(identifier: id, coordinate: Coordinate(latitude: lat, longitude: lon), kind: .fix)
+        }
+        return ParsedRoute(elements: [
+            .waypoint(wp("KAUS", 30.19, -97.67)),
+            .waypoint(wp("CWK", 30.38, -97.53)),
+            .waypoint(wp("KDAL", 32.85, -96.85)),
+        ])
+    }
+
+    @Test func distanceOnlyWithoutPerformance() {
+        let log = NavLogBuilder.build(route: route())
+        #expect(log.legs.count == 2)
+        #expect(log.totalDistanceNM > 150)
+        #expect(log.totalEteSeconds == nil)
+        #expect(log.totalFuelGallons == nil)
+    }
+
+    @Test func eteAndFuelWithProfile() throws {
+        let log = NavLogBuilder.build(route: route(), cruiseTASKt: 120, fuelBurnGPH: 9)
+        let total = try #require(log.totalEteSeconds)
+        // ~160 NM at 120 kt ≈ 80 min.
+        #expect(total > 60 * 60 && total < 100 * 60)
+        let fuel = try #require(log.totalFuelGallons)
+        #expect(abs(fuel - (total / 3600 * 9)) < 0.01)
+        #expect(log.legs.last?.cumulativeDistanceNM == log.totalDistanceNM)
+    }
+
+    @Test func headwindSlowsLeg() {
+        let still = NavLogBuilder.build(route: route(), cruiseTASKt: 120)
+        let wind = NavLogBuilder.build(route: route(), cruiseTASKt: 120) { _ in
+            LegWind(fromDegrees: 20, speedKt: 30) // roughly on the nose for a NNE course
+        }
+        #expect(wind.totalEteSeconds! > still.totalEteSeconds!)
     }
 
     @Test func parsesLatLonWaypoints() {

@@ -117,13 +117,37 @@ struct AeroDatabaseBuilder {
                     url TEXT NOT NULL
                 );
                 CREATE INDEX idx_plate_airport ON plate(airport_id);
+                CREATE TABLE airway (
+                    id TEXT NOT NULL,
+                    location TEXT NOT NULL,
+                    designation TEXT,
+                    point_count INTEGER NOT NULL,
+                    authority TEXT NOT NULL DEFAULT 'faa',
+                    PRIMARY KEY (id, location)
+                );
+                CREATE TABLE airway_point (
+                    airway_id TEXT NOT NULL,
+                    location TEXT NOT NULL,
+                    seq INTEGER NOT NULL,
+                    point_id TEXT NOT NULL,
+                    point_type TEXT,
+                    lat REAL,
+                    lon REAL
+                );
+                CREATE INDEX idx_airway_point ON airway_point(airway_id, location, seq);
                 """)
         }
     }
 
+    /// Bumped when the schema gains tables the app depends on, so the app can
+    /// prefer a bundled seed over an installed database of the same cycle.
+    /// 2: airway/airway_point tables.
+    static let schemaVersion = 2
+
     func setMeta(cycle: DataCycle) throws {
         try dbQueue.write { db in
             try db.execute(sql: "INSERT OR REPLACE INTO meta VALUES ('cycle', ?)", arguments: [cycle.id])
+            try db.execute(sql: "INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", arguments: [String(Self.schemaVersion)])
             try db.execute(
                 sql: "INSERT OR REPLACE INTO meta VALUES ('cycle_effective', ?)",
                 arguments: [ISO8601DateFormatter().string(from: cycle.effectiveDate)]

@@ -6,6 +6,11 @@ struct SettingsHomeView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("Flying") {
+                    NavigationLink("Aircraft") {
+                        AircraftListView()
+                    }
+                }
                 Section("Legal") {
                     Button("Review Advisory-Use Disclaimer") {
                         hasAcknowledgedDisclaimer = false

@@ -16,6 +16,7 @@ struct MapHomeView: View {
             EFBMapView(
                 layers: layers,
                 position: positionSource.position,
+                route: environment.activeMapRoute,
                 followOwnship: $followOwnship,
                 trackUp: $trackUp,
                 onSelectAirport: { selectedAirportId = $0 }
@@ -86,6 +87,16 @@ struct MapHomeView: View {
             }
             if layers.radarEnabled {
                 Label("NEXRAD via IEM", systemImage: "cloud.rain")
+            }
+            if let route = environment.activeMapRoute {
+                Button {
+                    environment.activeMapRoute = nil
+                } label: {
+                    Label(route.label, systemImage: "xmark.circle.fill")
+                        .foregroundStyle(.pink)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("map.clearRoute")
             }
             if positionSource.isDenied {
                 Label("Location off", systemImage: "location.slash")

@@ -8,6 +8,13 @@ public protocol WaypointResolving: Sendable {
     func resolveWaypoint(identifier: String) async throws -> ResolvedWaypoint?
     /// True when the identifier is a published airway (e.g. "V163", "J24", "Q22", "T254").
     func isAirway(identifier: String) async throws -> Bool
+    /// The airway's full ordered point list, empty when unknown. Resolvers
+    /// without airway data inherit the default empty implementation.
+    func airwayPoints(identifier: String) async throws -> [ResolvedWaypoint]
+}
+
+extension WaypointResolving {
+    public func airwayPoints(identifier: String) async throws -> [ResolvedWaypoint] { [] }
 }
 
 public struct ResolvedWaypoint: Codable, Sendable, Hashable {
@@ -31,19 +38,26 @@ public struct ResolvedWaypoint: Codable, Sendable, Hashable {
 public struct ParsedRoute: Sendable, Hashable {
     public enum Element: Sendable, Hashable {
         case waypoint(ResolvedWaypoint)
-        /// Airway identifier; expansion into fixes happens against the airway
-        /// database (Phase 3).
-        case airway(String)
+        /// An airway with the intermediate points between its entry and exit
+        /// waypoints. `via` is empty when the bracketing waypoints don't both
+        /// sit on the airway (or no airway data is available) — the UI flags
+        /// that instead of guessing.
+        case airway(String, via: [ResolvedWaypoint])
         case direct
         case unresolved(String)
     }
 
     public var elements: [Element]
 
+    /// The flown waypoint sequence: explicit waypoints plus airway
+    /// intermediates, in route order.
     public var waypoints: [ResolvedWaypoint] {
-        elements.compactMap {
-            if case .waypoint(let wp) = $0 { return wp }
-            return nil
+        elements.flatMap { element -> [ResolvedWaypoint] in
+            switch element {
+            case .waypoint(let wp): return [wp]
+            case .airway(_, let via): return via
+            case .direct, .unresolved: return []
+            }
         }
     }
 
@@ -88,7 +102,7 @@ public struct RouteParser: Sendable {
                 continue
             }
             if try await resolver.isAirway(identifier: token) {
-                elements.append(.airway(token))
+                elements.append(.airway(token, via: []))
                 continue
             }
             if let waypoint = try await resolver.resolveWaypoint(identifier: token) {
@@ -97,7 +111,42 @@ public struct RouteParser: Sendable {
                 elements.append(.unresolved(token))
             }
         }
-        return ParsedRoute(elements: elements)
+        return ParsedRoute(elements: try await expandAirways(elements))
+    }
+
+    /// Fill each airway's `via` with the points between its bracketing entry
+    /// and exit waypoints, honoring airway direction (reversed when flown
+    /// exit-to-entry).
+    private func expandAirways(_ elements: [ParsedRoute.Element]) async throws -> [ParsedRoute.Element] {
+        var result = elements
+        for index in result.indices {
+            guard case .airway(let ident, _) = result[index] else { continue }
+
+            func bracketingWaypoint(searching indices: some Sequence<Int>) -> ResolvedWaypoint? {
+                for i in indices {
+                    if case .waypoint(let wp) = result[i] { return wp }
+                    if case .airway = result[i] { return nil }
+                    if case .unresolved = result[i] { return nil }
+                }
+                return nil
+            }
+            guard let entry = bracketingWaypoint(searching: (0..<index).reversed()),
+                  let exit = bracketingWaypoint(searching: (index + 1)..<result.count) else { continue }
+
+            let points = try await resolver.airwayPoints(identifier: ident)
+            guard let entryIndex = points.firstIndex(where: { $0.identifier == entry.identifier }),
+                  let exitIndex = points.firstIndex(where: { $0.identifier == exit.identifier }),
+                  entryIndex != exitIndex else { continue }
+
+            let via: [ResolvedWaypoint]
+            if entryIndex < exitIndex {
+                via = Array(points[(entryIndex + 1)..<exitIndex])
+            } else {
+                via = Array(points[(exitIndex + 1)..<entryIndex]).reversed()
+            }
+            result[index] = .airway(ident, via: via)
+        }
+        return result
     }
 
     /// ICAO lat/lon waypoints: "4620N07805W" (degrees+minutes) or "46N078W" (whole degrees).

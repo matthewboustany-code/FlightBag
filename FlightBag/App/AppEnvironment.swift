@@ -1,6 +1,13 @@
 import Foundation
 import Observation
+import FBModels
 import FBProviders
+
+/// A planned route pushed onto the map from a flight's detail page.
+struct ActiveMapRoute: Hashable {
+    var label: String
+    var coordinates: [Coordinate]
+}
 
 /// Dependency container injected at the app root. Features reach services
 /// through this — never through singletons — so previews and tests can swap
@@ -13,6 +20,11 @@ final class AppEnvironment {
     let weatherStore: WeatherStore
     let plateStore: PlateStore
     let filingService: any FilingService
+
+    /// Route drawn on the map tab; set from a flight, cleared from the map.
+    var activeMapRoute: ActiveMapRoute?
+    /// One-shot tab-switch request ("Show on map"); RootTabView consumes it.
+    var requestedTab: AppTab?
 
     init(
         weatherProvider: any WeatherProvider = AviationWeatherGovProvider(),

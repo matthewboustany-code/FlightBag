@@ -49,3 +49,36 @@ struct FixtureHTTPClient: HTTPGetting {
         #expect(receipt.status == .rejected)
     }
 }
+
+@Suite struct FBWindsParserTests {
+    @Test func parsesRealProduct() throws {
+        let url = try #require(Bundle.module.url(forResource: "windtemp_dfw", withExtension: "txt", subdirectory: "Fixtures"))
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let stations = FBWindsParser.parse(text)
+        #expect(stations.count > 10)
+
+        let dal = try #require(stations.first { $0.identifier == "DAL" })
+        // "DAL 9900 2907+15 …": 3000 ft light and variable, 6000 ft 290°/7 kt +15 °C.
+        let low = try #require(dal.entries[3000])
+        #expect(low.fromDegrees == nil && low.speedKt == 0)
+        let mid = try #require(dal.entries[6000])
+        #expect(mid.fromDegrees == 290 && mid.speedKt == 7 && mid.temperatureC == 15)
+        // Above 24 000 ft signs are dropped: "311230" = 310°/12 kt, −30 °C.
+        let high = try #require(dal.entries[30000])
+        #expect(high.fromDegrees == 310 && high.speedKt == 12 && high.temperatureC == -30)
+
+        // entryNearest picks the closest level (7000 → 6000 ft).
+        #expect(dal.entryNearest(altitudeFt: 7000)?.fromDegrees == mid.fromDegrees)
+    }
+
+    @Test func decodesHighSpeedGroups() {
+        // dd 51–86 encodes direction −50 with speed +100: 7512 = 250°/112 kt.
+        let entry = FBWindsParser.parseGroup("7512-30")
+        #expect(entry?.fromDegrees == 250)
+        #expect(entry?.speedKt == 112)
+        #expect(entry?.temperatureC == -30)
+        // 36 encodes 360°.
+        #expect(FBWindsParser.parseGroup("3610")?.fromDegrees == 360)
+        #expect(FBWindsParser.parseGroup("") == nil)
+    }
+}

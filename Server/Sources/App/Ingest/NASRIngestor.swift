@@ -14,7 +14,7 @@ struct NASRIngestor {
     let logger: (String) -> Void
 
     func run(cycle: DataCycle, into builder: AeroDatabaseBuilder) async throws {
-        let groups = ["APT", "FRQ", "NAV", "FIX"]
+        let groups = ["APT", "FRQ", "NAV", "FIX", "AWY"]
         var extracted: [String: URL] = [:]
         for group in groups {
             extracted[group] = try await fetchAndExtract(group: group, cycle: cycle)
@@ -24,6 +24,8 @@ struct NASRIngestor {
         try ingestFrequencies(directory: extracted["FRQ"]!, into: builder)
         try ingestNavaids(directory: extracted["NAV"]!, into: builder)
         try ingestFixes(directory: extracted["FIX"]!, into: builder)
+        // Airways resolve their points against navaid/fix, so run last.
+        try ingestAirways(directory: extracted["AWY"]!, into: builder)
     }
 
     // MARK: Download
@@ -261,6 +263,99 @@ struct NASRIngestor {
                     ]
                 )
             }
+        }
+    }
+
+    // MARK: Airways
+
+    /// AWY_BASE's AIRWAY_STRING is the ordered point list ("MAM GROSZ BRO …")
+    /// mixing navaid and fix identifiers. Coordinates are baked in here so the
+    /// app expands an airway with a single indexed query. Airway ids repeat
+    /// across locations (Alaska/CONUS/Hawaii), so (id, location) is the key.
+    private func ingestAirways(directory: URL, into builder: AeroDatabaseBuilder) throws {
+        let table = try csv(directory, "AWY_BASE.csv")
+        logger("AWY_BASE: \(table.rows.count) rows")
+
+        // Identifier → candidate coordinates. Both maps preloaded once; fix
+        // and navaid idents can be ambiguous (same ident, several sites).
+        var fixCandidates: [String: [(Double, Double)]] = [:]
+        var navaidCandidates: [String: [(Double, Double)]] = [:]
+        try builder.dbQueue.read { db in
+            for row in try Row.fetchAll(db, sql: "SELECT id, lat, lon FROM fix") {
+                fixCandidates[row["id"], default: []].append((row["lat"], row["lon"]))
+            }
+            for row in try Row.fetchAll(db, sql: "SELECT id, lat, lon FROM navaid") {
+                navaidCandidates[row["id"], default: []].append((row["lat"], row["lon"]))
+            }
+        }
+
+        var resolvedCount = 0
+        var unresolvedCount = 0
+
+        try builder.dbQueue.write { db in
+            for row in table.rows {
+                guard let id = table.value(row, "AWY_ID"),
+                      let location = table.value(row, "AWY_LOCATION"),
+                      let airwayString = table.value(row, "AIRWAY_STRING") else { continue }
+                let points = airwayString.split(separator: " ").map(String.init)
+                guard !points.isEmpty else { continue }
+
+                try db.execute(
+                    sql: "INSERT OR REPLACE INTO airway (id, location, designation, point_count) VALUES (?, ?, ?, ?)",
+                    arguments: [id, location, table.value(row, "AWY_DESIGNATION"), points.count]
+                )
+
+                var previous: (Double, Double)?
+                for (seq, point) in points.enumerated() {
+                    // 5-letter identifiers are fixes; 1–3 letter are navaids.
+                    // Try the likely table first, fall back to the other.
+                    let (primary, primaryType, fallback, fallbackType) = point.count >= 4
+                        ? (fixCandidates[point], "fix", navaidCandidates[point], "navaid")
+                        : (navaidCandidates[point], "navaid", fixCandidates[point], "fix")
+
+                    var pointType: String?
+                    var coordinate: (Double, Double)?
+                    if let picked = pick(from: primary, location: location, near: previous) {
+                        pointType = primaryType
+                        coordinate = picked
+                    } else if let picked = pick(from: fallback, location: location, near: previous) {
+                        pointType = fallbackType
+                        coordinate = picked
+                    }
+
+                    if coordinate != nil { resolvedCount += 1 } else { unresolvedCount += 1 }
+                    if let coordinate { previous = coordinate }
+
+                    try db.execute(
+                        sql: "INSERT INTO airway_point (airway_id, location, seq, point_id, point_type, lat, lon) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        arguments: [id, location, seq, point, pointType, coordinate?.0, coordinate?.1]
+                    )
+                }
+            }
+        }
+        logger("Airway points: \(resolvedCount) resolved, \(unresolvedCount) unresolved")
+    }
+
+    /// Choose among ambiguous candidates: keep those in the airway's region
+    /// (Alaska/Hawaii/CONUS), then take the one nearest the previous point.
+    private func pick(from candidates: [(Double, Double)]?, location: String, near previous: (Double, Double)?) -> (Double, Double)? {
+        guard let candidates, !candidates.isEmpty else { return nil }
+        func inRegion(_ c: (Double, Double)) -> Bool {
+            let isAlaska = c.0 > 48 && c.1 < -125
+            let isHawaii = c.0 < 30 && c.1 < -150
+            switch location {
+            case "A": return isAlaska
+            case "H": return isHawaii
+            default: return !isAlaska && !isHawaii
+            }
+        }
+        let regional = candidates.filter(inRegion)
+        let pool = regional.isEmpty ? candidates : regional
+        guard let previous else { return pool.first }
+        return pool.min { a, b in
+            let da = (a.0 - previous.0) * (a.0 - previous.0) + (a.1 - previous.1) * (a.1 - previous.1)
+            let db = (b.0 - previous.0) * (b.0 - previous.0) + (b.1 - previous.1) * (b.1 - previous.1)
+            return da < db
         }
     }
 

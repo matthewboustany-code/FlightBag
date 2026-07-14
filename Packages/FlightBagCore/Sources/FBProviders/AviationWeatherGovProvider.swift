@@ -4,8 +4,10 @@ import FBModels
 /// FAA/NWS weather from the aviationweather.gov Data API (free, no key).
 /// https://aviationweather.gov/data/api/
 public struct AviationWeatherGovProvider: WeatherProvider {
-    private let http: any HTTPGetting
-    private let baseURL: URL
+    let http: any HTTPGetting
+    let baseURL: URL
+
+    var windtempURL: URL { baseURL.appendingPathComponent("windtemp") }
 
     public init(http: any HTTPGetting = URLSessionHTTPClient(), baseURL: URL = URL(string: "https://aviationweather.gov/api/data")!) {
         self.http = http

@@ -1,5 +1,6 @@
 import SwiftUI
 import MapKit
+import FBModels
 
 /// The EFB map: MKMapView with stacked raster overlays (sectional under
 /// radar), airport annotations from the offline database, and ownship.
@@ -8,6 +9,7 @@ import MapKit
 struct EFBMapView: UIViewRepresentable {
     let layers: MapLayersState
     let position: OwnshipPosition?
+    var route: ActiveMapRoute?
     @Binding var followOwnship: Bool
     @Binding var trackUp: Bool
     var onSelectAirport: (String) -> Void
@@ -40,6 +42,7 @@ struct EFBMapView: UIViewRepresentable {
         coordinator.onSelectAirport = onSelectAirport
         coordinator.airportsEnabled = layers.airportsEnabled
         coordinator.syncOverlays(on: map, layers: layers)
+        coordinator.syncRoute(on: map, route: route)
         coordinator.syncOwnship(on: map, position: position, followOwnship: followOwnship, trackUp: trackUp)
         if !layers.airportsEnabled {
             coordinator.clearAirportAnnotations(on: map)
@@ -61,6 +64,8 @@ struct EFBMapView: UIViewRepresentable {
 
         private var sectionalOverlays: [URL: MBTilesOverlay] = [:]
         private var radarOverlay: MKTileOverlay?
+        private var routePolyline: MKPolyline?
+        private var routeKey: ActiveMapRoute?
         private var overlayAlphas: [ObjectIdentifier: CGFloat] = [:]
         private let ownshipAnnotation = OwnshipAnnotation()
         private var ownshipOnMap = false
@@ -103,6 +108,29 @@ struct EFBMapView: UIViewRepresentable {
             }
         }
 
+        // MARK: Route
+
+        func syncRoute(on map: MKMapView, route: ActiveMapRoute?) {
+            guard route != routeKey else { return }
+            routeKey = route
+            if let existing = routePolyline {
+                map.removeOverlay(existing)
+                routePolyline = nil
+            }
+            guard let route, route.coordinates.count >= 2 else { return }
+            let points = route.coordinates.map {
+                CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
+            }
+            let polyline = MKPolyline(coordinates: points, count: points.count)
+            routePolyline = polyline
+            map.addOverlay(polyline, level: .aboveLabels)
+            map.setVisibleMapRect(
+                polyline.boundingMapRect,
+                edgePadding: UIEdgeInsets(top: 60, left: 60, bottom: 60, right: 60),
+                animated: true
+            )
+        }
+
         private func setAlpha(_ alpha: CGFloat, for overlay: MKOverlay, on map: MKMapView) {
             overlayAlphas[ObjectIdentifier(overlay)] = alpha
             if let renderer = map.renderer(for: overlay) as? MKTileOverlayRenderer {
@@ -111,6 +139,15 @@ struct EFBMapView: UIViewRepresentable {
         }
 
         nonisolated func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            if let polyline = overlay as? MKPolyline {
+                // EFB convention: the planned course line is magenta.
+                let renderer = MKPolylineRenderer(polyline: polyline)
+                renderer.strokeColor = .systemPink
+                renderer.lineWidth = 4
+                renderer.lineCap = .round
+                renderer.lineJoin = .round
+                return renderer
+            }
             guard let tileOverlay = overlay as? MKTileOverlay else {
                 return MKOverlayRenderer(overlay: overlay)
             }

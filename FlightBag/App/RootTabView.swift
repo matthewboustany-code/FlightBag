@@ -7,6 +7,7 @@ enum AppTab: String {
 /// Top-level navigation: sidebar on iPad, tab bar on iPhone.
 struct RootTabView: View {
     @AppStorage("hasAcknowledgedDisclaimer") private var hasAcknowledgedDisclaimer = false
+    @Environment(AppEnvironment.self) private var environment
     // Launch-selectable (e.g. `-initialTab map`) for deep links and demos.
     @State private var selectedTab: AppTab =
         AppTab(rawValue: UserDefaults.standard.string(forKey: "initialTab") ?? "") ?? .airports
@@ -30,6 +31,12 @@ struct RootTabView: View {
             }
         }
         .tabViewStyle(.sidebarAdaptable)
+        .onChange(of: environment.requestedTab) { _, requested in
+            if let requested {
+                selectedTab = requested
+                environment.requestedTab = nil
+            }
+        }
         .sheet(isPresented: .constant(!hasAcknowledgedDisclaimer)) {
             DisclaimerView {
                 hasAcknowledgedDisclaimer = true
