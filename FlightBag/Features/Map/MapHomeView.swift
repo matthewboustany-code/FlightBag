@@ -61,10 +61,13 @@ struct MapHomeView: View {
             positionSource.activate()
             layers.availableCharts = ChartStore().availableCharts()
             // Launch-argument state for demos/automation, e.g.
-            // `-mapDemoRadar YES -mapDemoFollow YES`.
+            // `-mapDemoRadar YES -mapDemoFollow YES -mapDemoChart ifrlow`.
             let defaults = UserDefaults.standard
             if defaults.bool(forKey: "mapDemoRadar") { layers.radarEnabled = true }
             if defaults.bool(forKey: "mapDemoFollow") { followOwnship = true }
+            if let chart = defaults.string(forKey: "mapDemoChart") {
+                layers.chart = ChartKind(rawValue: chart)
+            }
         }
         .sheet(item: $selectedAirportId) { airportId in
             NavigationStack {
@@ -80,10 +83,14 @@ struct MapHomeView: View {
 
     private var statusStrip: some View {
         HStack(spacing: 8) {
-            if layers.availableCharts.isEmpty {
-                Label("No charts downloaded — showing base map", systemImage: "square.stack.3d.up.slash")
-            } else if layers.sectionalEnabled {
-                Label(layers.availableCharts.map(\.name).joined(separator: ", "), systemImage: "map")
+            if let chart = layers.chart {
+                let offline = layers.offlineSetsForSelectedChart
+                Label(
+                    offline.isEmpty
+                        ? "\(chart.displayName) · FAA streaming"
+                        : "\(chart.displayName) · offline (\(offline.map(\.name).joined(separator: ", ")))",
+                    systemImage: offline.isEmpty ? "antenna.radiowaves.left.and.right" : "internaldrive"
+                )
             }
             if layers.radarEnabled {
                 Label("NEXRAD via IEM", systemImage: "cloud.rain")
@@ -133,16 +140,27 @@ private struct LayersPanel: View {
 
     var body: some View {
         Form {
-            Section("Charts") {
-                Toggle("VFR Sectional", isOn: $layers.sectionalEnabled)
-                    .disabled(layers.availableCharts.isEmpty)
-                if layers.availableCharts.isEmpty {
-                    Text("No chart tiles downloaded yet. Chart region downloads arrive with the FlightBag server; sideloaded .mbtiles in the app's Documents folder are picked up automatically.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else if layers.sectionalEnabled {
+            Section("Aeronautical Chart") {
+                Picker("Chart", selection: $layers.chart) {
+                    Text("None").tag(ChartKind?.none)
+                    ForEach(ChartKind.allCases) { kind in
+                        Text(kind.displayName).tag(Optional(kind))
+                    }
+                }
+                .pickerStyle(.menu)
+                .accessibilityIdentifier("layers.chart")
+                if let chart = layers.chart {
                     LabeledContent("Opacity") {
-                        Slider(value: $layers.sectionalOpacity, in: 0.3...1)
+                        Slider(value: $layers.chartOpacity, in: 0.3...1)
+                    }
+                    if layers.offlineSetsForSelectedChart.isEmpty {
+                        Text("Streaming from FAA chart services — requires internet and is not for offline use. Downloaded regions (or .mbtiles sideloaded via the Files app) are used automatically.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("Using downloaded tiles: \(layers.offlineSetsForSelectedChart.map(\.name).joined(separator: ", ")). Areas outside them are blank — streaming fills in once they're removed.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }

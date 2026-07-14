@@ -1,16 +1,75 @@
 import Foundation
 import Observation
 
+/// An aeronautical chart type the map can display. Each kind renders from
+/// downloaded MBTiles when available, otherwise it streams from the FAA's
+/// public ArcGIS raster tile services (aeronautical data is public domain).
+enum ChartKind: String, CaseIterable, Identifiable, Sendable {
+    case vfrSectional = "vfr"
+    case ifrLow = "ifrlow"
+    case ifrHigh = "ifrhigh"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .vfrSectional: "VFR Sectional"
+        case .ifrLow: "IFR Enroute Low"
+        case .ifrHigh: "IFR Enroute High"
+        }
+    }
+
+    /// FAA AIS tile service backing this chart when no offline tiles exist.
+    private var faaServiceName: String {
+        switch self {
+        case .vfrSectional: "VFR_Sectional"
+        case .ifrLow: "IFR_AreaLow"
+        case .ifrHigh: "IFR_High"
+        }
+    }
+
+    var streamingURLTemplate: String {
+        "https://tiles.arcgis.com/tiles/ssFJjBXIUyZDrSYZ/arcgis/rest/services/\(faaServiceName)/MapServer/tile/{z}/{y}/{x}"
+    }
+
+    /// Zoom levels the FAA service publishes; outside this range the layer
+    /// draws nothing (MapKit does not resample raster tiles).
+    var streamingZoomRange: ClosedRange<Int> {
+        switch self {
+        case .vfrSectional: 8...12
+        case .ifrLow: 7...12
+        case .ifrHigh: 5...9
+        }
+    }
+
+    /// Classify a downloaded tile set by its file name
+    /// ("San_Antonio_sectional.mbtiles" → VFR, "*_ifr_low.mbtiles" → IFR low).
+    static func kind(forFileName file: String) -> ChartKind {
+        let lower = file.lowercased()
+        if lower.contains("ifr_high") || lower.contains("ifrhigh") || lower.contains("high") { return .ifrHigh }
+        if lower.contains("ifr") { return .ifrLow }
+        return .vfrSectional
+    }
+}
+
 /// User-controlled layer stack for the EFB map. Layers are data, not code:
 /// Phase 4 adds traffic and FIS-B radar as more entries in the same panel.
 @Observable
 final class MapLayersState {
-    var sectionalEnabled = true
-    var sectionalOpacity = 1.0
+    /// The selected aeronautical chart; nil shows the base map only.
+    var chart: ChartKind? = .vfrSectional
+    var chartOpacity = 1.0
     var radarEnabled = false
     var radarOpacity = 0.7
     var airportsEnabled = true
 
-    /// Charts found on disk; refreshed when the map appears.
+    /// Downloaded tile sets found on disk; refreshed when the map appears.
     var availableCharts: [ChartStore.ChartSet] = []
+
+    /// Downloaded tile sets backing the selected chart kind (offline wins
+    /// over streaming).
+    var offlineSetsForSelectedChart: [ChartStore.ChartSet] {
+        guard let chart else { return [] }
+        return availableCharts.filter { $0.kind == chart }
+    }
 }

@@ -62,7 +62,8 @@ struct EFBMapView: UIViewRepresentable {
         var onSelectAirport: (String) -> Void = { _ in }
         var airportsEnabled = true
 
-        private var sectionalOverlays: [URL: MBTilesOverlay] = [:]
+        private var chartOverlays: [MKTileOverlay] = []
+        private var chartKey: String?
         private var radarOverlay: MKTileOverlay?
         private var routePolyline: MKPolyline?
         private var routeKey: ActiveMapRoute?
@@ -75,20 +76,32 @@ struct EFBMapView: UIViewRepresentable {
         // MARK: Overlay stack
 
         func syncOverlays(on map: MKMapView, layers: MapLayersState) {
-            // Sectionals (bottom of the aviation stack).
-            for chart in layers.availableCharts {
-                if layers.sectionalEnabled, sectionalOverlays[chart.url] == nil,
-                   let overlay = MBTilesOverlay(fileURL: chart.url) {
-                    sectionalOverlays[chart.url] = overlay
-                    map.insertOverlay(overlay, at: 0, level: .aboveRoads)
+            // Aeronautical chart (bottom of the aviation stack): offline
+            // MBTiles when downloaded, FAA streaming tiles otherwise.
+            let offlineSets = layers.offlineSetsForSelectedChart
+            let key = (layers.chart?.rawValue ?? "none") + "|" + offlineSets.map(\.id).joined(separator: ",")
+            if key != chartKey {
+                chartKey = key
+                for overlay in chartOverlays { map.removeOverlay(overlay) }
+                chartOverlays.removeAll()
+
+                if let chart = layers.chart {
+                    if offlineSets.isEmpty {
+                        chartOverlays.append(StreamingChartOverlay(kind: chart))
+                    } else {
+                        for set in offlineSets {
+                            if let overlay = MBTilesOverlay(fileURL: set.url) {
+                                chartOverlays.append(overlay)
+                            }
+                        }
+                    }
+                    for overlay in chartOverlays {
+                        map.insertOverlay(overlay, at: 0, level: .aboveRoads)
+                    }
                 }
             }
-            if !layers.sectionalEnabled {
-                for (_, overlay) in sectionalOverlays { map.removeOverlay(overlay) }
-                sectionalOverlays.removeAll()
-            }
-            for overlay in sectionalOverlays.values {
-                setAlpha(CGFloat(layers.sectionalOpacity), for: overlay, on: map)
+            for overlay in chartOverlays {
+                setAlpha(CGFloat(layers.chartOpacity), for: overlay, on: map)
             }
 
             // Radar (above charts).

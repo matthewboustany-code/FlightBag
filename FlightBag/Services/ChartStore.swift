@@ -11,6 +11,7 @@ struct ChartStore: Sendable {
         var name: String
         var cycleId: String
         var url: URL
+        var kind: ChartKind
     }
 
     private let cyclesRoot: URL
@@ -35,7 +36,12 @@ struct ChartStore: Sendable {
                 // Keep only the newest cycle's copy of a given chart name.
                 let name = displayName(for: file)
                 guard !sets.contains(where: { $0.name == name }) else { continue }
-                sets.append(ChartSet(name: name, cycleId: cycle, url: tilesDir.appendingPathComponent(file)))
+                sets.append(ChartSet(
+                    name: name,
+                    cycleId: cycle,
+                    url: tilesDir.appendingPathComponent(file),
+                    kind: ChartKind.kind(forFileName: file)
+                ))
             }
         }
         return sets.sorted { $0.name < $1.name }
