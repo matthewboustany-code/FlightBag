@@ -83,6 +83,18 @@ final class MapLayersState {
     var airmetTangoEnabled = false
     var airmetZuluEnabled = false
 
+    /// When enabled, only advisories whose altitude band includes the planned
+    /// altitude are drawn; advisories without published altitudes always show.
+    var advisoryAltitudeFilterEnabled = false
+    var advisoryFilterAltitudeFt: Double = 6500
+
+    /// True when the advisory's vertical extent matters at the filter
+    /// altitude (or the filter is off).
+    func passesAltitudeFilter(_ band: AltitudeBand) -> Bool {
+        guard advisoryAltitudeFilterEnabled else { return true }
+        return band.contains(altitudeFt: Int(advisoryFilterAltitudeFt))
+    }
+
     var anyAdvisoryEnabled: Bool {
         tfrsEnabled || sigmetsEnabled || airmetSierraEnabled || airmetTangoEnabled || airmetZuluEnabled
     }

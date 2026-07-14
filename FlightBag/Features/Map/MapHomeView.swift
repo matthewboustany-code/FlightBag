@@ -77,6 +77,11 @@ struct MapHomeView: View {
                 layers.airmetTangoEnabled = true
                 layers.airmetZuluEnabled = true
             }
+            let demoAltitude = defaults.double(forKey: "mapDemoAltitudeFilter")
+            if demoAltitude > 0 {
+                layers.advisoryAltitudeFilterEnabled = true
+                layers.advisoryFilterAltitudeFt = demoAltitude
+            }
             if defaults.bool(forKey: "mapDemoAero") {
                 layers.waypointsEnabled = true
                 layers.airwaysLowEnabled = true
@@ -226,15 +231,28 @@ private struct LayersPanel: View {
             }
 
             Section {
-                advisoryToggle("TFRs", isOn: $layers.tfrsEnabled, category: .tfr, count: store.tfrs.reduce(0) { $0 + $1.areas.count })
-                advisoryToggle("SIGMETs", isOn: $layers.sigmetsEnabled, category: .sigmet, count: store.airSigmets.count)
+                advisoryToggle("TFRs", isOn: $layers.tfrsEnabled, category: .tfr, count: AdvisoryOverlayBuilder.visibleTFRAreas(layers: layers, store: store).count)
+                advisoryToggle("SIGMETs", isOn: $layers.sigmetsEnabled, category: .sigmet, count: AdvisoryOverlayBuilder.visibleSigmets(layers: layers, store: store).count)
                 advisoryToggle("AIRMET Sierra (IFR/Mtn)", isOn: $layers.airmetSierraEnabled, category: .airmetSierra, count: airmetCount(.sierra))
                 advisoryToggle("AIRMET Tango (Turb/Wind)", isOn: $layers.airmetTangoEnabled, category: .airmetTango, count: airmetCount(.tango))
                 advisoryToggle("AIRMET Zulu (Icing)", isOn: $layers.airmetZuluEnabled, category: .airmetZulu, count: airmetCount(.zulu))
+
+                Toggle("Filter by altitude", isOn: $layers.advisoryAltitudeFilterEnabled)
+                    .accessibilityIdentifier("layers.altitudeFilter")
+                if layers.advisoryAltitudeFilterEnabled {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("At \(Int(layers.advisoryFilterAltitudeFt).formatted()) ft MSL")
+                            .font(.callout.monospacedDigit())
+                        Slider(value: $layers.advisoryFilterAltitudeFt, in: 0...45000, step: 500)
+                    }
+                }
             } header: {
                 Text("Airspace & Advisories")
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
+                    if layers.advisoryAltitudeFilterEnabled {
+                        Text("Showing advisories whose altitude band includes \(Int(layers.advisoryFilterAltitudeFt).formatted()) ft. Advisories without published altitudes always show.")
+                    }
                     if let refreshed = store.lastRefresh {
                         Text("Refreshed \(refreshed.formatted(date: .omitted, time: .shortened)). Tap an outlined area on the map for details.")
                     }
@@ -272,7 +290,7 @@ private struct LayersPanel: View {
     }
 
     private func airmetCount(_ product: GraphicalAirmet.Product) -> Int {
-        store.gAirmets.filter { $0.product == product && $0.isArea }.count
+        AdvisoryOverlayBuilder.visibleAirmets(product, layers: layers, store: store).count
     }
 
     private func advisoryToggle(_ title: String, isOn: Binding<Bool>, category: AdvisoryCategory, count: Int) -> some View {

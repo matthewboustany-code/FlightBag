@@ -234,7 +234,9 @@ struct EFBMapView: UIViewRepresentable {
             let key = [
                 layers.tfrsEnabled, layers.sigmetsEnabled, layers.airmetSierraEnabled,
                 layers.airmetTangoEnabled, layers.airmetZuluEnabled,
-            ].map { $0 ? "1" : "0" }.joined() + "|\(store.dataVersion)"
+            ].map { $0 ? "1" : "0" }.joined()
+                + "|\(store.dataVersion)"
+                + "|\(layers.advisoryAltitudeFilterEnabled ? Int(layers.advisoryFilterAltitudeFt) : -1)"
             guard key != advisoryKey else { return }
             advisoryKey = key
 

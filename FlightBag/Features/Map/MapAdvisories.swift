@@ -65,28 +65,51 @@ final class AdvisoryPolygon: MKPolygon {
 }
 
 enum AdvisoryOverlayBuilder {
+    // Filtered views of the store, shared by overlay building and the layer
+    // panel's counts so the numbers always match what's drawn.
+
+    @MainActor
+    static func visibleTFRAreas(layers: MapLayersState, store: AdvisoryStore) -> [(tfr: TemporaryFlightRestriction, area: TemporaryFlightRestriction.Area)] {
+        store.tfrs.flatMap { tfr in
+            tfr.areas
+                .filter { layers.passesAltitudeFilter($0.altitudeBand) }
+                .map { (tfr, $0) }
+        }
+    }
+
+    @MainActor
+    static func visibleSigmets(layers: MapLayersState, store: AdvisoryStore) -> [WeatherAdvisory] {
+        store.airSigmets.filter { layers.passesAltitudeFilter($0.altitudeBand) }
+    }
+
+    @MainActor
+    static func visibleAirmets(_ product: GraphicalAirmet.Product, layers: MapLayersState, store: AdvisoryStore) -> [GraphicalAirmet] {
+        store.gAirmets.filter {
+            $0.product == product && $0.isArea && $0.polygon.count >= 3
+                && layers.passesAltitudeFilter($0.altitudeBand)
+        }
+    }
+
     /// Overlays for every enabled advisory category.
     @MainActor
     static func overlays(layers: MapLayersState, store: AdvisoryStore) -> [AdvisoryPolygon] {
         var result: [AdvisoryPolygon] = []
 
         if layers.tfrsEnabled {
-            for tfr in store.tfrs {
-                for area in tfr.areas {
-                    let limits = [area.floorText, area.ceilingText].compactMap(\.self).joined(separator: " – ")
-                    result.append(AdvisoryPolygon.make(
-                        coordinates: area.polygon,
-                        category: .tfr,
-                        title: "TFR \(tfr.id)\(tfr.type.map { " · \($0)" } ?? "")",
-                        subtitle: [area.name, limits.isEmpty ? nil : limits].compactMap(\.self).joined(separator: " · "),
-                        detail: tfr.description
-                    ))
-                }
+            for (tfr, area) in visibleTFRAreas(layers: layers, store: store) {
+                let limits = [area.floorText, area.ceilingText].compactMap(\.self).joined(separator: " – ")
+                result.append(AdvisoryPolygon.make(
+                    coordinates: area.polygon,
+                    category: .tfr,
+                    title: "TFR \(tfr.id)\(tfr.type.map { " · \($0)" } ?? "")",
+                    subtitle: [area.name, limits.isEmpty ? nil : limits].compactMap(\.self).joined(separator: " · "),
+                    detail: tfr.description
+                ))
             }
         }
 
         if layers.sigmetsEnabled {
-            for advisory in store.airSigmets {
+            for advisory in visibleSigmets(layers: layers, store: store) {
                 let altitudes = [
                     advisory.altitudeLowFt.map { "from \($0) ft" },
                     advisory.altitudeHiFt.map { "to \($0) ft" },
@@ -109,7 +132,7 @@ enum AdvisoryOverlayBuilder {
         ]
         for (product, enabled, category) in productToggles where enabled {
             // Area polygons only; freezing-level contours are lines.
-            for airmet in store.gAirmets where airmet.product == product && airmet.isArea && airmet.polygon.count >= 3 {
+            for airmet in visibleAirmets(product, layers: layers, store: store) {
                 let altitudes = [
                     airmet.base.map { "base \($0)" },
                     airmet.top.map { "top \($0)" },
