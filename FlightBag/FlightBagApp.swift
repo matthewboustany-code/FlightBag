@@ -16,19 +16,22 @@ struct FlightBagApp: App {
         WindowGroup {
             RootTabView()
                 .environment(environment)
-                // GDL90 reception runs only while active; no background
-                // mode is requested in this phase.
+                // GDL90 reception runs in the foreground; no background mode
+                // is requested in this phase. Only a true background
+                // transition stops it — a permission alert or Control Center
+                // drops the scene to .inactive but must not drop the feed.
                 .onChange(of: scenePhase, initial: true) { _, phase in
-                    if phase == .active && adsbEnabled {
-                        environment.gdl90Receiver.start()
-                    } else {
+                    switch phase {
+                    case .background:
                         environment.gdl90Receiver.stop()
+                    default:
+                        if adsbEnabled { environment.gdl90Receiver.start() }
                     }
                 }
                 .onChange(of: adsbEnabled) { _, enabled in
-                    if enabled && scenePhase == .active {
+                    if enabled && scenePhase != .background {
                         environment.gdl90Receiver.start()
-                    } else {
+                    } else if !enabled {
                         environment.gdl90Receiver.stop()
                     }
                 }

@@ -680,14 +680,14 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = FBGDL90;
 		};
-		FBC0DE000000000000000016 /* FBFISB */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = FBFISB;
-		};
 		FBC0DE000000000000000015 /* GRDB */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = FBC0DE000000000000000002 /* XCRemoteSwiftPackageReference "GRDB" */;
 			productName = GRDB;
+		};
+		FBC0DE000000000000000016 /* FBFISB */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FBFISB;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

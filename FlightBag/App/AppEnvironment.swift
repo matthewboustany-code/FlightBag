@@ -24,6 +24,10 @@ final class AppEnvironment {
     let advisoryStore = AdvisoryStore()
     let airspaceStore = AirspaceStore()
     let gdl90Receiver = GDL90Receiver()
+    let gdl90PositionSource = GDL90PositionSource()
+    /// ADS-B preferred, CoreLocation fallback; the only position source
+    /// views should touch.
+    let positionSource: CompositePositionSource
 
     /// Route drawn on the map tab; set from a flight, cleared from the map.
     var activeMapRoute: ActiveMapRoute?
@@ -38,5 +42,20 @@ final class AppEnvironment {
         self.weatherStore = WeatherStore(provider: weatherProvider)
         self.plateStore = PlateStore()
         self.filingService = filingService
+        self.positionSource = CompositePositionSource(
+            primary: gdl90PositionSource,
+            fallback: CoreLocationPositionSource()
+        )
+
+        gdl90Receiver.onOwnship = { [gdl90PositionSource] report in
+            gdl90PositionSource.ingest(report: report)
+        }
+        gdl90Receiver.onOwnshipGeoAltitude = { [gdl90PositionSource] feet in
+            gdl90PositionSource.ingest(geometricAltitudeFeet: feet)
+        }
+        gdl90Receiver.onTick = { [weak self] _ in
+            guard let self else { return }
+            self.gdl90PositionSource.updateCurrency(heartbeatGPSValid: self.gdl90Receiver.gpsPositionValid)
+        }
     }
 }

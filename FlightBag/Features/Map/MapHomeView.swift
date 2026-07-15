@@ -6,7 +6,6 @@ import FBModels
 struct MapHomeView: View {
     @Environment(AppEnvironment.self) private var environment
     @State private var layers = MapLayersState()
-    @State private var positionSource = CoreLocationPositionSource()
     @State private var followOwnship = false
     @State private var trackUp = false
     @State private var selectedAirportId: String?
@@ -17,7 +16,7 @@ struct MapHomeView: View {
         ZStack(alignment: .topTrailing) {
             EFBMapView(
                 layers: layers,
-                position: positionSource.position,
+                position: environment.positionSource.position,
                 route: environment.activeMapRoute,
                 followOwnship: $followOwnship,
                 trackUp: $trackUp,
@@ -61,7 +60,7 @@ struct MapHomeView: View {
             statusStrip
         }
         .task {
-            positionSource.activate()
+            environment.positionSource.activate()
             layers.availableCharts = ChartStore().availableCharts()
             // Launch-argument state for demos/automation, e.g.
             // `-mapDemoRadar YES -mapDemoFollow YES -mapDemoChart ifrlow`.
@@ -132,7 +131,13 @@ struct MapHomeView: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("map.clearRoute")
             }
-            if positionSource.isDenied {
+            if let position = environment.positionSource.position {
+                Label(position.sourceName, systemImage: position.sourceName == "ADS-B"
+                    ? "antenna.radiowaves.left.and.right" : "location.fill")
+                    .foregroundStyle(position.sourceName == "ADS-B" ? .green : .secondary)
+                    .accessibilityIdentifier("map.positionSource")
+            }
+            if environment.positionSource.isDenied {
                 Label("Location off", systemImage: "location.slash")
                     .foregroundStyle(.orange)
             }
