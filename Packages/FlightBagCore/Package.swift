@@ -15,12 +15,14 @@ let package = Package(
         .library(name: "FBFlightPlan", targets: ["FBFlightPlan"]),
         .library(name: "FBProviders", targets: ["FBProviders"]),
         .library(name: "FBGDL90", targets: ["FBGDL90"]),
+        .library(name: "FBFISB", targets: ["FBFISB"]),
     ],
     targets: [
         .target(name: "FBModels"),
         .target(name: "FBFlightPlan", dependencies: ["FBModels"]),
         .target(name: "FBProviders", dependencies: ["FBModels", "FBFlightPlan"]),
         .target(name: "FBGDL90"),
+        .target(name: "FBFISB"),
         .testTarget(name: "FBModelsTests", dependencies: ["FBModels"]),
         .testTarget(name: "FBFlightPlanTests", dependencies: ["FBFlightPlan"]),
         .testTarget(
@@ -29,5 +31,6 @@ let package = Package(
             resources: [.copy("Fixtures")]
         ),
         .testTarget(name: "FBGDL90Tests", dependencies: ["FBGDL90"]),
+        .testTarget(name: "FBFISBTests", dependencies: ["FBFISB"]),
     ]
 )
