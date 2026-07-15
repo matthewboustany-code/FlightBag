@@ -12,6 +12,7 @@
 		FBC0DE000000000000000023 /* FBProviders in Frameworks */ = {isa = PBXBuildFile; productRef = FBC0DE000000000000000013 /* FBProviders */; };
 		FBC0DE000000000000000024 /* FBGDL90 in Frameworks */ = {isa = PBXBuildFile; productRef = FBC0DE000000000000000014 /* FBGDL90 */; };
 		FBC0DE000000000000000025 /* GRDB in Frameworks */ = {isa = PBXBuildFile; productRef = FBC0DE000000000000000015 /* GRDB */; };
+		FBC0DE000000000000000026 /* FBFISB in Frameworks */ = {isa = PBXBuildFile; productRef = FBC0DE000000000000000016 /* FBFISB */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -64,6 +65,7 @@
 				FBC0DE000000000000000022 /* FBFlightPlan in Frameworks */,
 				FBC0DE000000000000000023 /* FBProviders in Frameworks */,
 				FBC0DE000000000000000024 /* FBGDL90 in Frameworks */,
+				FBC0DE000000000000000026 /* FBFISB in Frameworks */,
 				FBC0DE000000000000000025 /* GRDB in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -129,6 +131,7 @@
 				FBC0DE000000000000000012 /* FBFlightPlan */,
 				FBC0DE000000000000000013 /* FBProviders */,
 				FBC0DE000000000000000014 /* FBGDL90 */,
+				FBC0DE000000000000000016 /* FBFISB */,
 				FBC0DE000000000000000015 /* GRDB */,
 			);
 			productName = FlightBag;
@@ -676,6 +679,10 @@
 		FBC0DE000000000000000014 /* FBGDL90 */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = FBGDL90;
+		};
+		FBC0DE000000000000000016 /* FBFISB */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = FBFISB;
 		};
 		FBC0DE000000000000000015 /* GRDB */ = {
 			isa = XCSwiftPackageProductDependency;

@@ -23,6 +23,9 @@ let package = Package(
         .target(name: "FBProviders", dependencies: ["FBModels", "FBFlightPlan"]),
         .target(name: "FBGDL90"),
         .target(name: "FBFISB"),
+        // Dev tool: synthesizes a GDL90 receiver over UDP for app testing
+        // without hardware (swift run gdl90sim). Not shipped.
+        .executableTarget(name: "gdl90sim", dependencies: ["FBGDL90", "FBFISB"]),
         .testTarget(name: "FBModelsTests", dependencies: ["FBModels"]),
         .testTarget(name: "FBFlightPlanTests", dependencies: ["FBFlightPlan"]),
         .testTarget(

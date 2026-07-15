@@ -12,6 +12,7 @@ struct ActiveMapRoute: Hashable {
 /// Dependency container injected at the app root. Features reach services
 /// through this — never through singletons — so previews and tests can swap
 /// implementations.
+@MainActor
 @Observable
 final class AppEnvironment {
     /// nil only if the bundled database is missing/corrupt; UI shows a
@@ -22,6 +23,7 @@ final class AppEnvironment {
     let filingService: any FilingService
     let advisoryStore = AdvisoryStore()
     let airspaceStore = AirspaceStore()
+    let gdl90Receiver = GDL90Receiver()
 
     /// Route drawn on the map tab; set from a flight, cleared from the map.
     var activeMapRoute: ActiveMapRoute?
