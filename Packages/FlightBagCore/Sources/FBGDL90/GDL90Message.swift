@@ -77,6 +77,10 @@ public enum GDL90Message: Sendable, Hashable {
         /// Pressure altitude, ft; nil when invalid (0xFFF).
         public let altitudeFeet: Int?
         public let airborne: Bool
+        /// Navigation Integrity Category (0 = unknown/no fix, 11 = best).
+        public let nic: Int
+        /// Navigation Accuracy Category for Position.
+        public let nacp: Int
         /// True track or heading, degrees.
         public let trackDegrees: Double
         /// Ground speed, kt; nil when invalid.
@@ -100,6 +104,9 @@ public enum GDL90Message: Sendable, Hashable {
 
             let misc = b[11] & 0x0F
             airborne = (misc & 0x08) != 0
+
+            nic = Int(b[12] >> 4)
+            nacp = Int(b[12] & 0x0F)
 
             let hVel = (UInt16(b[13]) << 4) | (UInt16(b[14]) >> 4)
             groundSpeedKt = hVel == 0xFFF ? nil : Int(hVel)
