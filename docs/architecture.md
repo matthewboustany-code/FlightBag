@@ -14,6 +14,9 @@ the project history; this records the load-bearing choices.
     via `HTTPGetting`.
   - `FBGDL90` — pure byte-level GDL90/ADS-B decoding. No sockets; the app owns
     the UDP listener.
+  - `FBFISB` — UAT/FIS-B uplink decoding (ground uplink frames, APDUs, DLAC
+    text, NEXRAD global blocks). Also socket-free; fed by `FBGDL90`'s 0x07
+    payloads. Encode helpers here back the tests and the `gdl90sim` tool.
 - `Server/` — Vapor 4 backend. API under `/v1/`, ingestion pipelines as
   commands (`ingest-nasr`, `ingest-dtpp`, `build-manifest`).
 
@@ -44,4 +47,9 @@ effective instant. UI shows freshness badges everywhere.
    strengthens the ask and is worth considering for liability regardless.
 2. **FAA NOTAM API key** — free registration at external.faa.gov.
 3. **Apple multicast entitlement** (`com.apple.developer.networking.multicast`)
-   — required to receive broadcast-mode GDL90 from some ADS-B receivers.
+   — required only to receive *broadcast* GDL90. Mainstream receivers
+   (Stratux, Sentry) unicast to each DHCP client, which needs no
+   entitlement, so ADS-B In ships without it; only broadcast-only units
+   are affected. `FlightBag/FlightBag.entitlements` is deliberately empty:
+   add the key **after** Apple grants the request, since a profile without
+   the grant fails to sign a build that declares it.

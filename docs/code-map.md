@@ -3,7 +3,7 @@
 File-level guide for navigating the codebase without reading everything.
 Companion to [architecture.md](architecture.md), which records the *why*;
 this records the *where*. Regenerate when the layout shifts (line counts
-are approximate as of 2026-07-15; ~9,700 lines of Swift total).
+are approximate as of 2026-07-15; ~11,700 lines of Swift total).
 
 ## Top level
 
@@ -12,7 +12,30 @@ are approximate as of 2026-07-15; ~9,700 lines of Swift total).
 | `FlightBag/` | iOS/iPadOS app target (SwiftUI + some UIKit/MapKit) |
 | `Packages/FlightBagCore/` | Shared SPM package, Linux-compatible, used by app and server |
 | `Server/` | Vapor 4 backend: `/v1/` API + AIRAC-cycle ingestion commands |
-| `FlightBagTests/`, `FlightBagUITests/` | App-target tests. **Never run XCUITests locally** — they freeze this Mac; verify via launch-arg hooks + `simctl` screenshots |
+| `FlightBagTests/`, `FlightBagUITests/` | App-target tests. **Never run XCUITests locally** — they freeze this Mac; verify via launch-arg hooks + `simctl` screenshots (see below) |
+
+## Verifying without XCUITests
+
+Launch args seed deterministic state for `xcrun simctl` screenshots:
+
+| Arg | Effect |
+|---|---|
+| `-initialTab map\|airports\|flights\|downloads\|settings` | opening tab |
+| `-hasAcknowledgedDisclaimer YES` | skip the first-run legal gate |
+| `-mapDemoSpan N` / `-mapDemoFollow` / `-mapDemoChart` / `-mapDemoPanel` | map framing, follow mode, chart kind, layers panel |
+| `-mapDemoRadar` / `-mapDemoRadarSource internet\|adsb` | radar layer + source |
+| `-mapDemoAdvisories` / `-mapDemoAltitudeFilter N` / `-mapDemoAero` | advisory + aeronautical layers |
+| `-mapDemoSkipLocation YES` | skip the location prompt, which otherwise sits modally over the map |
+| `-adsbDemoSeed YES` | seed traffic targets + a synthetic NEXRAD cell, no receiver needed |
+| `-airportsDemoOpen KAUS` | deep-link to an airport detail page |
+| `-weatherDemoOffline YES` | failing weather provider, to exercise cached/FIS-B paths |
+| `-flightsDemoSeed YES -flightsDemoScreen plan\|filing\|navlog\|map` | flights workflow |
+
+For live ADS-B behavior, run `swift run gdl90sim` (in `Packages/FlightBagCore`)
+alongside the app. Note the simulator persists `adsbEnabled`; if the receiver
+reads "Off", run
+`xcrun simctl spawn booted defaults write Me.FlightBag adsbEnabled -bool YES`
+(editing the plist directly is clobbered by `cfprefsd`).
 
 ## App target (`FlightBag/`)
 
@@ -33,7 +56,11 @@ touch GRDB or providers directly.
 - `WeatherStore.swift` — actor; METAR/TAF fetch + cache (`StationWeather`)
 - `AdvisoryStore.swift` — fetches TFR/SIGMET/G-AIRMET via FBProviders
 - `AirspaceStore.swift` — loads airspace polygons for map viewport
-- `PositionSource.swift` — `PositionSource` protocol + `CoreLocationPositionSource`; `OwnshipPosition`. (GDL90/ADS-B source plugs in here later.)
+- `PositionSource.swift` — `PositionSource` protocol + `CoreLocationPositionSource`; `OwnshipPosition`
+- `GDL90Receiver.swift` — the ADS-B entry point: `GDL90UDPListener` (NWListener on UDP 4000, per-endpoint deframer, decodes on its own queue) + `GDL90Receiver` (`@MainActor @Observable`; connection state machine, 1 Hz health/aging tick, FIS-B product counters, sinks for every consumer below)
+- `GDL90PositionSource.swift` — `GDL90PositionSource` (ADS-B ownship, NIC/heartbeat gated) + `CompositePositionSource` (ADS-B preferred, CoreLocation fallback) — **this is what views should read**, via `AppEnvironment.positionSource`
+- `TrafficStore.swift` — live traffic keyed by address, 30 s age-out, ownship-echo suppression
+- `FISBRadarStore.swift` — NEXRAD mosaic from uplink blocks, 10-min expiry
 
 ### Features (`Features/`)
 **Map** — the most complex feature; MapKit, not SwiftUI Map:
@@ -44,6 +71,8 @@ touch GRDB or providers directly.
 - `StreamingChartOverlay.swift` — FAA tile streaming with over-zoom (uses `TileResampler.swift`)
 - `MapAdvisories.swift` — `AdvisoryCategory`, `AdvisoryPolygon`, `AdvisoryOverlayBuilder` (advisory → MKOverlay, altitude filtering)
 - `MapAeronautical.swift` — waypoint/airway/airspace rendering: annotations, polylines, airspace category colors
+- `MapTraffic.swift` — `TrafficAnnotation` + `TrafficAnnotationView` (track-rotated chevron, on-ground square, callsign/relative-altitude data block)
+- `FISBRadarOverlay.swift` — `FISBRadarOverlay` (world rect, lock-guarded mosaic snapshot) + `FISBRadarRenderer` (draws only intersecting bins; 8-level NEXRAD ramp)
 
 **Flights** — plan/file/fly workflow:
 - `FlightsHomeView.swift` → `FlightDetailView.swift` (hub per flight)
@@ -66,6 +95,13 @@ Four targets, dependency order `FBModels ← FBFlightPlan / FBProviders`; `FBGDL
 - **FBFlightPlan** — `ICAOFlightPlan`, `FlightPlanValidator` (same rules client+server — the package's reason to exist), `RouteParser` (needs a `WaypointResolving`), `NavLog`, `NavMath`
 - **FBProviders** — `HTTPGetting` (injected transport) + protocols (`WeatherProvider`, `NotamProvider`, `PlateProvider`, `FilingService`) and FAA impls: `AviationWeatherGovProvider`, `TFRProvider`, `AirspaceProvider`, `WindsAloftProvider`, `AdvisoryProviders`
 - **FBGDL90** — `GDL90Deframer` + `GDL90Message`: pure byte-level ADS-B decoding, no sockets
+- **FBFISB** — UAT/FIS-B uplink decoding, fed by GDL90 0x07 payloads: `UATUplinkFrame` (ground uplink header + info frames) → `FISBAPDU` (product ID, time options, segmentation) → `FISBProduct`: `DLAC` 6-bit text → `FISBTextProduct` (METAR/TAF/…), and `NEXRADGlobalBlock` (RLE bins, empty-block bitmaps, `NEXRADBlockGeometry` block/bin → lat/lon). `FISBEncoding` mirrors each layer for tests and `gdl90sim`.
+
+There is also a **`gdl90sim`** executable target (`swift run gdl90sim`) — a
+hardware-free GDL90 receiver simulator that unicasts a synthetic scene
+(ownship circuit at KAUS, traffic, DLAC METAR/TAF, drifting NEXRAD cell)
+to `127.0.0.1:4000`. Flags: `--host --port --no-gps --stop-after --traffic`.
+It's the main way to exercise ADS-B end-to-end.
 
 Tests live in `Packages/FlightBagCore/Tests/` with JSON fixtures under
 `FBProvidersTests/Fixtures/`. These run fine locally (`swift test` in the
@@ -86,5 +122,8 @@ package dir) — the XCUITest ban applies only to the app's UI tests.
 | Airport data / search | `AeroDatabase.swift` |
 | Flight planning / validation | FBFlightPlan target, `FlightPlanFormView.swift` |
 | Weather | `WeatherStore.swift`, `AviationWeatherGovProvider.swift` |
+| Anything ADS-B (traffic, ownship, FIS-B) | `GDL90Receiver.swift` first — every consumer hangs off its sinks, wired in `AppEnvironment.init` |
+| GDL90/FIS-B bit layouts | FBGDL90 / FBFISB targets; drive with `swift run gdl90sim` |
+| Ownship position | `GDL90PositionSource.swift` (`CompositePositionSource` is the one views read) |
 | New data in `aero.sqlite` | `AeroDatabaseBuilder.swift` (server) **and** `AeroDatabase.swift` (app) — schema must match |
 | Downloads / cycles | FBModels `DataCycle` + `DownloadManifest`, `DownloadsHomeView.swift` |

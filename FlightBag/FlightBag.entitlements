@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Deliberately empty. com.apple.developer.networking.multicast goes
+	  here once Apple grants the request, and not before: a provisioning
+	  profile without the grant fails to sign a build that declares it.
+	  Only broadcast-mode GDL90 receivers need it; unicast receivers
+	  (Stratux, Sentry) work without. See docs/architecture.md.
+	-->
+</dict>
+</plist>
