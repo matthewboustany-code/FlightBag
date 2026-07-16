@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import FBModels
 import FBProviders
+import FBGDL90
 
 /// A planned route pushed onto the map from a flight's detail page.
 struct ActiveMapRoute: Hashable {
@@ -25,6 +26,7 @@ final class AppEnvironment {
     let airspaceStore = AirspaceStore()
     let gdl90Receiver = GDL90Receiver()
     let gdl90PositionSource = GDL90PositionSource()
+    let trafficStore = TrafficStore()
     /// ADS-B preferred, CoreLocation fallback; the only position source
     /// views should touch.
     let positionSource: CompositePositionSource
@@ -47,15 +49,21 @@ final class AppEnvironment {
             fallback: CoreLocationPositionSource()
         )
 
-        gdl90Receiver.onOwnship = { [gdl90PositionSource] report in
+        gdl90Receiver.onOwnship = { [gdl90PositionSource, trafficStore] report in
             gdl90PositionSource.ingest(report: report)
+            // A receiver reports the ship it's installed in; suppress the echo.
+            trafficStore.ownshipAddress = report.address
         }
         gdl90Receiver.onOwnshipGeoAltitude = { [gdl90PositionSource] feet in
             gdl90PositionSource.ingest(geometricAltitudeFeet: feet)
         }
+        gdl90Receiver.onTraffic = { [trafficStore] report in
+            trafficStore.ingest(report: report)
+        }
         gdl90Receiver.onTick = { [weak self] _ in
             guard let self else { return }
             self.gdl90PositionSource.updateCurrency(heartbeatGPSValid: self.gdl90Receiver.gpsPositionValid)
+            self.trafficStore.prune()
         }
     }
 }

@@ -9,6 +9,9 @@ import FBModels
 struct EFBMapView: UIViewRepresentable {
     let layers: MapLayersState
     let position: OwnshipPosition?
+    /// Observed so membership changes re-run updateUIView; the store is
+    /// read from the environment.
+    var trafficVersion: Int = 0
     var route: ActiveMapRoute?
     @Binding var followOwnship: Bool
     @Binding var trackUp: Bool
@@ -38,6 +41,7 @@ struct EFBMapView: UIViewRepresentable {
         map.register(AirportAnnotationView.self, forAnnotationViewWithReuseIdentifier: AirportAnnotationView.reuseId)
         map.register(OwnshipAnnotationView.self, forAnnotationViewWithReuseIdentifier: OwnshipAnnotationView.reuseId)
         map.register(WaypointAnnotationView.self, forAnnotationViewWithReuseIdentifier: WaypointAnnotationView.reuseId)
+        map.register(TrafficAnnotationView.self, forAnnotationViewWithReuseIdentifier: TrafficAnnotationView.reuseId)
         context.coordinator.map = map
         context.coordinator.aeroDatabase = environment.aeroDatabase
         context.coordinator.airspaceStore = environment.airspaceStore
@@ -60,6 +64,12 @@ struct EFBMapView: UIViewRepresentable {
         coordinator.refreshAeronautical(on: map)
         coordinator.syncRoute(on: map, route: route)
         coordinator.syncOwnship(on: map, position: position, followOwnship: followOwnship, trackUp: trackUp)
+        coordinator.syncTraffic(
+            on: map,
+            store: environment.trafficStore,
+            enabled: layers.trafficEnabled,
+            ownshipAltitudeFt: position?.altitudeFeet.map(Int.init)
+        )
         if !layers.airportsEnabled {
             coordinator.clearAirportAnnotations(on: map)
         }
@@ -98,6 +108,8 @@ struct EFBMapView: UIViewRepresentable {
         private var ownshipOnMap = false
         private var airportAnnotations: [String: AirportAnnotation] = [:]
         private var annotationTask: Task<Void, Never>?
+        private var trafficAnnotations: [UInt32: TrafficAnnotation] = [:]
+        private var trafficMembershipVersion = -1
 
         // MARK: Overlay stack
 
@@ -365,6 +377,48 @@ struct EFBMapView: UIViewRepresentable {
             }
         }
 
+        // MARK: Traffic
+
+        /// Mutates existing traffic annotations in place and adds/removes
+        /// only on membership change — the airport delta pattern, tuned for
+        /// the 1 Hz update rate.
+        func syncTraffic(on map: MKMapView, store: TrafficStore, enabled: Bool, ownshipAltitudeFt: Int?) {
+            guard enabled else {
+                if !trafficAnnotations.isEmpty {
+                    map.removeAnnotations(Array(trafficAnnotations.values))
+                    trafficAnnotations.removeAll()
+                    trafficMembershipVersion = -1
+                }
+                return
+            }
+
+            // Add/remove only when membership changed.
+            if store.membershipVersion != trafficMembershipVersion {
+                trafficMembershipVersion = store.membershipVersion
+                let live = Set(store.targets.keys)
+                let stale = trafficAnnotations.filter { !live.contains($0.key) }
+                if !stale.isEmpty {
+                    map.removeAnnotations(Array(stale.values))
+                    for key in stale.keys { trafficAnnotations[key] = nil }
+                }
+                for address in live where trafficAnnotations[address] == nil {
+                    let annotation = TrafficAnnotation(address: address)
+                    trafficAnnotations[address] = annotation
+                    map.addAnnotation(annotation)
+                }
+            }
+
+            // Refresh dynamics on every pass (cheap, in place).
+            for (address, annotation) in trafficAnnotations {
+                guard let target = store.targets[address] else { continue }
+                annotation.update(from: target.report, ownshipAltitudeFt: ownshipAltitudeFt)
+                if let view = map.view(for: annotation) as? TrafficAnnotationView {
+                    view.annotation = annotation  // Redraw the data block.
+                    view.updateRotation(map: map)
+                }
+            }
+        }
+
         // MARK: Airport annotations
 
         nonisolated func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
@@ -426,6 +480,9 @@ struct EFBMapView: UIViewRepresentable {
                 }
                 if annotation is WaypointAnnotation {
                     return mapView.dequeueReusableAnnotationView(withIdentifier: WaypointAnnotationView.reuseId, for: annotation)
+                }
+                if annotation is TrafficAnnotation {
+                    return mapView.dequeueReusableAnnotationView(withIdentifier: TrafficAnnotationView.reuseId, for: annotation)
                 }
                 return nil
             }

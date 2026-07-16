@@ -90,6 +90,39 @@ public enum GDL90Message: Sendable, Hashable {
         public let emitterCategory: UInt8
         public let callsign: String
 
+        /// Memberwise init for synthesizing reports (demos, tests).
+        public init(
+            alert: Bool = false,
+            addressType: AddressType? = .adsbICAO,
+            address: UInt32,
+            latitude: Double,
+            longitude: Double,
+            altitudeFeet: Int?,
+            airborne: Bool = true,
+            nic: Int = 10,
+            nacp: Int = 9,
+            trackDegrees: Double = 0,
+            groundSpeedKt: Int? = nil,
+            verticalVelocityFpm: Int? = nil,
+            emitterCategory: UInt8 = 1,
+            callsign: String = ""
+        ) {
+            self.alert = alert
+            self.addressType = addressType
+            self.address = address
+            self.latitude = latitude
+            self.longitude = longitude
+            self.altitudeFeet = altitudeFeet
+            self.airborne = airborne
+            self.nic = nic
+            self.nacp = nacp
+            self.trackDegrees = trackDegrees
+            self.groundSpeedKt = groundSpeedKt
+            self.verticalVelocityFpm = verticalVelocityFpm
+            self.emitterCategory = emitterCategory
+            self.callsign = callsign
+        }
+
         init?(payload: [UInt8]) {
             guard payload.count >= 28 else { return nil }
             let b = Array(payload.dropFirst())  // 27 report bytes

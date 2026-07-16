@@ -63,6 +63,8 @@ final class MapLayersState {
     var radarEnabled = false
     var radarOpacity = 0.7
     var airportsEnabled = true
+    /// ADS-B traffic targets from the receiver.
+    var trafficEnabled = true
 
     // Aeronautical vector layer, drawn over the chart from the offline
     // database (waypoints, airways) and FAA airspace services.

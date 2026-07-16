@@ -1,6 +1,7 @@
 import SwiftUI
 import MapKit
 import FBModels
+import FBGDL90
 
 /// The EFB map screen: chart/radar layer stack, ownship, airport tap-through.
 struct MapHomeView: View {
@@ -17,6 +18,7 @@ struct MapHomeView: View {
             EFBMapView(
                 layers: layers,
                 position: environment.positionSource.position,
+                trafficVersion: environment.trafficStore.membershipVersion,
                 route: environment.activeMapRoute,
                 followOwnship: $followOwnship,
                 trackUp: $trackUp,
@@ -60,7 +62,11 @@ struct MapHomeView: View {
             statusStrip
         }
         .task {
-            environment.positionSource.activate()
+            // Screenshot automation skips the location prompt, which would
+            // otherwise sit modally over the map.
+            if !UserDefaults.standard.bool(forKey: "mapDemoSkipLocation") {
+                environment.positionSource.activate()
+            }
             layers.availableCharts = ChartStore().availableCharts()
             // Launch-argument state for demos/automation, e.g.
             // `-mapDemoRadar YES -mapDemoFollow YES -mapDemoChart ifrlow`.
@@ -88,6 +94,7 @@ struct MapHomeView: View {
                 layers.enabledAirspaceCategories = Set(Airspace.Category.allCases)
             }
             if defaults.bool(forKey: "mapDemoPanel") { showLayersPanel = true }
+            if defaults.bool(forKey: "adsbDemoSeed") { seedDemoTraffic() }
             if layers.anyAdvisoryEnabled {
                 await environment.advisoryStore.refreshIfStale()
             }
@@ -104,6 +111,33 @@ struct MapHomeView: View {
                         }
                     }
             }
+        }
+    }
+
+    /// Deterministic traffic around the map center for screenshots
+    /// (`-adsbDemoSeed YES`), no receiver required.
+    private func seedDemoTraffic() {
+        let center = CLLocationCoordinate2D(latitude: 30.1945, longitude: -97.6699)
+        let samples: [(String, Double, Double, Int, Double, Int?, Bool)] = [
+            ("N771TC", 0.06, 0.05, 4500, 210, 600, true),
+            ("SWA1442", -0.05, 0.08, 8500, 90, -700, true),
+            ("N9021H", 0.09, -0.04, 3200, 315, 0, true),
+            ("N556DG", -0.07, -0.06, 5500, 45, 500, true),
+            ("N700GT", 0.005, 0.004, 600, 270, 0, false),
+        ]
+        for (index, sample) in samples.enumerated() {
+            let report = GDL90Message.TrafficReport(
+                address: 0xC0_00_01 + UInt32(index),
+                latitude: center.latitude + sample.1,
+                longitude: center.longitude + sample.2,
+                altitudeFeet: sample.3,
+                airborne: sample.6,
+                trackDegrees: sample.4,
+                groundSpeedKt: 120,
+                verticalVelocityFpm: sample.5,
+                callsign: sample.0
+            )
+            environment.trafficStore.ingest(report: report)
         }
     }
 
@@ -196,6 +230,22 @@ private struct LayersPanel: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+            }
+            Section {
+                Toggle(isOn: $layers.trafficEnabled) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "arrowtriangle.up.fill")
+                            .foregroundStyle(.orange)
+                            .font(.caption)
+                        Text("ADS-B Traffic")
+                    }
+                }
+                .accessibilityIdentifier("layers.traffic")
+            } header: {
+                Text("Traffic")
+            } footer: {
+                Text("Targets from your ADS-B receiver. Traffic is advisory only and may be incomplete — see and avoid.")
+                    .font(.caption)
             }
             Section("Weather") {
                 Toggle("Radar (NEXRAD)", isOn: $layers.radarEnabled)
