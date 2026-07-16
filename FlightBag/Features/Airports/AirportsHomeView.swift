@@ -7,6 +7,7 @@ struct AirportsHomeView: View {
     @State private var searchText = ""
     @State private var results: [AeroDatabase.SearchResult] = []
     @State private var searchTask: Task<Void, Never>?
+    @State private var path = NavigationPath()
     @AppStorage("recentAirports") private var recentAirportsStorage = ""
 
     private var recentIdentifiers: [String] {
@@ -14,7 +15,7 @@ struct AirportsHomeView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             List {
                 if searchText.isEmpty {
                     if !recentIdentifiers.isEmpty {
@@ -56,6 +57,13 @@ struct AirportsHomeView: View {
             .searchable(text: $searchText, prompt: "Airport ID, name, or city")
             .navigationDestination(for: String.self) { airportId in
                 AirportDetailView(airportId: airportId, onView: { recordRecent($0) })
+            }
+            // `-airportsDemoOpen KAUS` deep-links straight to a detail page
+            // for screenshot automation.
+            .task {
+                if let identifier = UserDefaults.standard.string(forKey: "airportsDemoOpen") {
+                    path.append(identifier)
+                }
             }
             .onChange(of: searchText) { _, newValue in
                 searchTask?.cancel()

@@ -33,13 +33,25 @@ final class AppEnvironment {
     /// views should touch.
     let positionSource: CompositePositionSource
 
+    /// `-weatherDemoOffline YES` simulates no connectivity, so cached and
+    /// FIS-B weather can be exercised in the simulator.
+    nonisolated static func defaultWeatherProvider() -> any WeatherProvider {
+        UserDefaults.standard.bool(forKey: "weatherDemoOffline")
+            ? OfflineWeatherProvider()
+            : AviationWeatherGovProvider()
+    }
+
+    /// Bumped when FIS-B text lands in the weather cache, so open airport
+    /// screens pick up uplinked weather without a manual refresh.
+    private(set) var fisbWeatherVersion = 0
+
     /// Route drawn on the map tab; set from a flight, cleared from the map.
     var activeMapRoute: ActiveMapRoute?
     /// One-shot tab-switch request ("Show on map"); RootTabView consumes it.
     var requestedTab: AppTab?
 
     init(
-        weatherProvider: any WeatherProvider = AviationWeatherGovProvider(),
+        weatherProvider: any WeatherProvider = AppEnvironment.defaultWeatherProvider(),
         filingService: any FilingService = LocalDraftFilingService()
     ) {
         self.aeroDatabase = try? AeroDatabase.open()
@@ -62,9 +74,17 @@ final class AppEnvironment {
         gdl90Receiver.onTraffic = { [trafficStore] report in
             trafficStore.ingest(report: report)
         }
-        gdl90Receiver.onFISB = { [fisbRadarStore] product in
-            if case .nexrad(let radar) = product {
+        gdl90Receiver.onFISB = { [weak self, fisbRadarStore, weatherStore] product in
+            switch product {
+            case .nexrad(let radar):
                 fisbRadarStore.ingest(radar)
+            case .text(let reports):
+                Task { @MainActor in
+                    await weatherStore.ingestFISB(reports: reports)
+                    self?.fisbWeatherVersion += 1
+                }
+            default:
+                break
             }
         }
         gdl90Receiver.onTick = { [weak self] _ in

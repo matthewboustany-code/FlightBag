@@ -56,15 +56,26 @@ struct WeatherSection: View {
                 .font(.caption)
             }
         }
-        .task(id: station) { await refresh() }
+        // Re-reads when FIS-B uplink delivers new text for any station, so
+        // weather appears in flight without tapping refresh.
+        .task(id: RefreshKey(station: station, fisbVersion: environment.fisbWeatherVersion)) {
+            await refresh()
+        }
     }
 
     @ViewBuilder
     private var ageStamp: some View {
-        if let fetchedAt = weather?.metar?.observationTime ?? weather?.fetchedAt {
-            Text(isStale ? "Cached · \(fetchedAt, style: .relative) ago" : "Observed \(fetchedAt, style: .relative) ago")
-                .font(.caption)
-                .foregroundStyle(isStale ? .orange : .secondary)
+        HStack(spacing: 6) {
+            if weather?.source == .fisb {
+                Label("via ADS-B", systemImage: "antenna.radiowaves.left.and.right")
+                    .font(.caption)
+                    .foregroundStyle(.green)
+            }
+            if let fetchedAt = weather?.metar?.observationTime ?? weather?.fetchedAt {
+                Text(isStale ? "Cached · \(fetchedAt, style: .relative) ago" : "Observed \(fetchedAt, style: .relative) ago")
+                    .font(.caption)
+                    .foregroundStyle(isStale ? .orange : .secondary)
+            }
         }
     }
 
@@ -89,6 +100,11 @@ struct WeatherSection: View {
         .font(.caption)
         .foregroundStyle(.secondary)
         .labelStyle(.titleAndIcon)
+    }
+
+    private struct RefreshKey: Equatable {
+        let station: ICAOIdentifier
+        let fisbVersion: Int
     }
 
     private func refresh() async {
