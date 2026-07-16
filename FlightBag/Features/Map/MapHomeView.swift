@@ -2,6 +2,7 @@ import SwiftUI
 import MapKit
 import FBModels
 import FBGDL90
+import FBFISB
 
 /// The EFB map screen: chart/radar layer stack, ownship, airport tap-through.
 struct MapHomeView: View {
@@ -19,6 +20,7 @@ struct MapHomeView: View {
                 layers: layers,
                 position: environment.positionSource.position,
                 trafficVersion: environment.trafficStore.membershipVersion,
+                fisbRadarVersion: environment.fisbRadarStore.dataVersion,
                 route: environment.activeMapRoute,
                 followOwnship: $followOwnship,
                 trackUp: $trackUp,
@@ -72,6 +74,11 @@ struct MapHomeView: View {
             // `-mapDemoRadar YES -mapDemoFollow YES -mapDemoChart ifrlow`.
             let defaults = UserDefaults.standard
             if defaults.bool(forKey: "mapDemoRadar") { layers.radarEnabled = true }
+            if let source = defaults.string(forKey: "mapDemoRadarSource"),
+               let kind = RadarSource(rawValue: source) {
+                layers.radarSource = kind
+                layers.radarEnabled = true
+            }
             if defaults.bool(forKey: "mapDemoFollow") { followOwnship = true }
             if let chart = defaults.string(forKey: "mapDemoChart") {
                 layers.chart = ChartKind(rawValue: chart)
@@ -94,7 +101,10 @@ struct MapHomeView: View {
                 layers.enabledAirspaceCategories = Set(Airspace.Category.allCases)
             }
             if defaults.bool(forKey: "mapDemoPanel") { showLayersPanel = true }
-            if defaults.bool(forKey: "adsbDemoSeed") { seedDemoTraffic() }
+            if defaults.bool(forKey: "adsbDemoSeed") {
+                seedDemoTraffic()
+                seedDemoRadar()
+            }
             if layers.anyAdvisoryEnabled {
                 await environment.advisoryStore.refreshIfStale()
             }
@@ -111,6 +121,19 @@ struct MapHomeView: View {
                         }
                     }
             }
+        }
+    }
+
+    private var radarStatusText: String {
+        switch layers.radarSource {
+        case .internet:
+            return "NEXRAD via IEM"
+        case .adsb:
+            guard let updated = environment.fisbRadarStore.updatedAt else {
+                return "NEXRAD via ADS-B · waiting"
+            }
+            let age = Int(Date().timeIntervalSince(updated) / 60)
+            return "NEXRAD via ADS-B · \(age) min old"
         }
     }
 
@@ -141,6 +164,39 @@ struct MapHomeView: View {
         }
     }
 
+    /// A synthetic storm cell near the map center for screenshots.
+    /// Intensity falls off with real distance from the core, so the cell
+    /// stays contiguous across block boundaries.
+    private func seedDemoRadar() {
+        let core = (latitude: 30.35, longitude: -97.4)
+        let radiusDegrees = 0.35
+        // Blocks are 48' wide but only 4' tall, so a round cell spans two
+        // columns and a dozen rows (row stride is 450 blocks).
+        var blocks: [NEXRADBlock] = []
+        for row in 449...461 {
+            for column in 327...328 {
+                let blockNumber = row * 450 + column
+                var bins = [UInt8](repeating: 0, count: NEXRADGlobalBlock.binsPerBlock)
+                var painted = false
+                for index in bins.indices {
+                    guard let bin = NEXRADBlockGeometry.binBounds(
+                        blockNumber: blockNumber, scaleFactor: 0, binIndex: index
+                    ) else { continue }
+                    let dy = (bin.south + bin.north) / 2 - core.latitude
+                    let dx = ((bin.west + bin.east) / 2 - core.longitude) * 0.86  // cos(30°)
+                    let distance = (dx * dx + dy * dy).squareRoot()
+                    guard distance < radiusDegrees else { continue }
+                    bins[index] = UInt8(max(0, min(7, Int((7.0 * (1 - distance / radiusDegrees)).rounded()))))
+                    painted = true
+                }
+                if painted {
+                    blocks.append(NEXRADBlock(blockNumber: blockNumber, scaleFactor: 0, intensities: bins))
+                }
+            }
+        }
+        environment.fisbRadarStore.ingest(NEXRADProduct(scope: .regional, blocks: blocks))
+    }
+
     private var statusStrip: some View {
         HStack(spacing: 8) {
             if let chart = layers.chart {
@@ -153,7 +209,7 @@ struct MapHomeView: View {
                 )
             }
             if layers.radarEnabled {
-                Label("NEXRAD via IEM", systemImage: "cloud.rain")
+                Label(radarStatusText, systemImage: "cloud.rain")
             }
             if let route = environment.activeMapRoute {
                 Button {
@@ -250,10 +306,19 @@ private struct LayersPanel: View {
             Section("Weather") {
                 Toggle("Radar (NEXRAD)", isOn: $layers.radarEnabled)
                 if layers.radarEnabled {
+                    Picker("Source", selection: $layers.radarSource) {
+                        ForEach(RadarSource.allCases) { source in
+                            Text(source.displayName).tag(source)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("layers.radarSource")
                     LabeledContent("Opacity") {
                         Slider(value: $layers.radarOpacity, in: 0.2...1)
                     }
-                    Text("Internet radar is delayed several minutes. Never use it to penetrate weather.")
+                    Text(layers.radarSource == .adsb
+                        ? "FIS-B radar comes from your ADS-B receiver and works with no internet. It is several minutes old. Never use it to penetrate weather."
+                        : "Internet radar is delayed several minutes and needs a connection. Never use it to penetrate weather.")
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }

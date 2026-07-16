@@ -53,8 +53,21 @@ enum ChartKind: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// User-controlled layer stack for the EFB map. Layers are data, not code:
-/// Phase 4 adds traffic and FIS-B radar as more entries in the same panel.
+enum RadarSource: String, CaseIterable, Identifiable, Sendable {
+    case internet
+    case adsb
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .internet: "Internet"
+        case .adsb: "ADS-B"
+        }
+    }
+}
+
+/// User-controlled layer stack for the EFB map. Layers are data, not code.
 @Observable
 final class MapLayersState {
     /// The selected aeronautical chart; nil shows the base map only.
@@ -62,6 +75,9 @@ final class MapLayersState {
     var chartOpacity = 1.0
     var radarEnabled = false
     var radarOpacity = 0.7
+    /// Where radar comes from: the internet mosaic or the ADS-B receiver's
+    /// FIS-B uplink (the only source that works airborne, offline).
+    var radarSource: RadarSource = .internet
     var airportsEnabled = true
     /// ADS-B traffic targets from the receiver.
     var trafficEnabled = true

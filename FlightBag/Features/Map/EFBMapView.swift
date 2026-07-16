@@ -12,6 +12,8 @@ struct EFBMapView: UIViewRepresentable {
     /// Observed so membership changes re-run updateUIView; the store is
     /// read from the environment.
     var trafficVersion: Int = 0
+    /// Same, for the FIS-B mosaic.
+    var fisbRadarVersion: Int = 0
     var route: ActiveMapRoute?
     @Binding var followOwnship: Bool
     @Binding var trackUp: Bool
@@ -60,6 +62,7 @@ struct EFBMapView: UIViewRepresentable {
         coordinator.airportsEnabled = layers.airportsEnabled
         coordinator.layersState = layers
         coordinator.syncOverlays(on: map, layers: layers)
+        coordinator.syncFISBRadar(on: map, store: environment.fisbRadarStore, layers: layers)
         coordinator.syncAdvisories(on: map, layers: layers, store: environment.advisoryStore)
         coordinator.refreshAeronautical(on: map)
         coordinator.syncRoute(on: map, route: route)
@@ -94,6 +97,8 @@ struct EFBMapView: UIViewRepresentable {
         private var chartOverlays: [MKTileOverlay] = []
         private var chartKey: String?
         private var radarOverlay: MKTileOverlay?
+        private var fisbRadarOverlay: FISBRadarOverlay?
+        private var fisbRadarKey: Int?
         private var advisoryOverlays: [AdvisoryPolygon] = []
         private var advisoryKey: String?
         private var waypointAnnotations: [WaypointAnnotation] = []
@@ -142,21 +147,53 @@ struct EFBMapView: UIViewRepresentable {
                 setAlpha(CGFloat(layers.chartOpacity), for: overlay, on: map)
             }
 
-            // Radar (above charts).
-            if layers.radarEnabled, radarOverlay == nil {
+            // Radar (above charts): internet tiles or the FIS-B mosaic.
+            let wantsInternetRadar = layers.radarEnabled && layers.radarSource == .internet
+            if wantsInternetRadar, radarOverlay == nil {
                 let radar = MKTileOverlay(urlTemplate: "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/{z}/{x}/{y}.png")
                 radar.canReplaceMapContent = false
                 radar.maximumZ = 16
                 radarOverlay = radar
                 map.addOverlay(radar, level: .aboveLabels)
             }
-            if !layers.radarEnabled, let radar = radarOverlay {
+            if !wantsInternetRadar, let radar = radarOverlay {
                 map.removeOverlay(radar)
                 radarOverlay = nil
             }
             if let radar = radarOverlay {
                 setAlpha(CGFloat(layers.radarOpacity), for: radar, on: map)
             }
+        }
+
+        // MARK: FIS-B radar
+
+        func syncFISBRadar(on map: MKMapView, store: FISBRadarStore, layers: MapLayersState) {
+            let enabled = layers.radarEnabled && layers.radarSource == .adsb
+            guard enabled else {
+                if let overlay = fisbRadarOverlay {
+                    map.removeOverlay(overlay)
+                    fisbRadarOverlay = nil
+                    fisbRadarKey = nil
+                }
+                return
+            }
+
+            let overlay: FISBRadarOverlay
+            if let existing = fisbRadarOverlay {
+                overlay = existing
+            } else {
+                overlay = FISBRadarOverlay()
+                fisbRadarOverlay = overlay
+                fisbRadarKey = nil
+                map.addOverlay(overlay, level: .aboveLabels)
+            }
+            setAlpha(CGFloat(layers.radarOpacity), for: overlay, on: map)
+
+            // Swap the snapshot and repaint only when the mosaic changed.
+            guard fisbRadarKey != store.dataVersion else { return }
+            fisbRadarKey = store.dataVersion
+            overlay.mosaic = store.mosaic
+            (map.renderer(for: overlay) as? FISBRadarRenderer)?.setNeedsDisplay()
         }
 
         // MARK: Aeronautical vector layer
@@ -307,12 +344,27 @@ struct EFBMapView: UIViewRepresentable {
 
         private func setAlpha(_ alpha: CGFloat, for overlay: MKOverlay, on map: MKMapView) {
             overlayAlphas[ObjectIdentifier(overlay)] = alpha
-            if let renderer = map.renderer(for: overlay) as? MKTileOverlayRenderer {
+            switch map.renderer(for: overlay) {
+            case let renderer as MKTileOverlayRenderer:
                 renderer.alpha = alpha
+            case let renderer as FISBRadarRenderer:
+                if renderer.alpha != alpha {
+                    renderer.alpha = alpha
+                    renderer.setNeedsDisplay()
+                }
+            default:
+                break
             }
         }
 
         nonisolated func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            if let radar = overlay as? FISBRadarOverlay {
+                let renderer = FISBRadarRenderer(overlay: radar)
+                MainActor.assumeIsolated {
+                    renderer.alpha = overlayAlphas[ObjectIdentifier(overlay)] ?? 1.0
+                }
+                return renderer
+            }
             if let advisory = overlay as? AdvisoryPolygon {
                 let renderer = MKPolygonRenderer(polygon: advisory)
                 let (stroke, fillAlpha, dashed) = MainActor.assumeIsolated {

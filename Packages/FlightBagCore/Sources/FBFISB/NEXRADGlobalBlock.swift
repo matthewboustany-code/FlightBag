@@ -27,6 +27,12 @@ public struct NEXRADProduct: Sendable {
     public let blocks: [NEXRADBlock]
     /// Block numbers explicitly reported as precipitation-free.
     public let clearedBlocks: [Int]
+
+    public init(scope: Scope, blocks: [NEXRADBlock], clearedBlocks: [Int] = []) {
+        self.scope = scope
+        self.blocks = blocks
+        self.clearedBlocks = clearedBlocks
+    }
 }
 
 public enum NEXRADGlobalBlock {
