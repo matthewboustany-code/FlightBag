@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsHomeView: View {
     @AppStorage("hasAcknowledgedDisclaimer") private var hasAcknowledgedDisclaimer = false
     @AppStorage("adsbEnabled") private var adsbEnabled = true
+    @AppStorage(ServerConfig.defaultsKey) private var serverBaseURL = ""
     @Environment(AppEnvironment.self) private var environment
 
     var body: some View {
@@ -14,6 +15,17 @@ struct SettingsHomeView: View {
                     }
                 }
                 adsbSection
+                Section {
+                    TextField("https://data.example.com", text: $serverBaseURL)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("settings.serverURL")
+                } header: {
+                    Text("Download Server")
+                } footer: {
+                    Text("Where chart-region downloads come from. Leave empty until a FlightBag data server is available.")
+                }
                 Section("Legal") {
                     Button("Review Advisory-Use Disclaimer") {
                         hasAcknowledgedDisclaimer = false

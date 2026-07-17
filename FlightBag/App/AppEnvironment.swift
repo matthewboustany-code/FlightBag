@@ -22,6 +22,8 @@ final class AppEnvironment {
     let aeroDatabase: AeroDatabase?
     let weatherStore: WeatherStore
     let plateStore: PlateStore
+    let chartStore = ChartStore()
+    let downloadCenter = DownloadCenter()
     let filingService: any FilingService
     let advisoryStore = AdvisoryStore()
     let airspaceStore = AirspaceStore()

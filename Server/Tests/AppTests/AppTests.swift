@@ -10,9 +10,10 @@ import FBModels
             try await configure(app)
             try await app.testing().test(.GET, "v1/manifest") { response async throws in
                 #expect(response.status == .ok)
+                // Decodes whether the server has a generated manifest.json
+                // (products populated) or is a fresh checkout (empty).
                 let manifest = try response.content.decode(DownloadManifest.self)
-                #expect(manifest.cycle == DataCycle.current().id)
-                #expect(manifest.products.isEmpty)
+                #expect(DataCycle(id: manifest.cycle) != nil)
             }
         } catch {
             try await app.asyncShutdown()

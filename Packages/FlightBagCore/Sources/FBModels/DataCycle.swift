@@ -87,6 +87,11 @@ public struct DataCycle: Codable, Sendable, Hashable, Comparable, CustomStringCo
         return DataCycle(cyclesFromEpoch: n + 1)
     }
 
+    public func previous() -> DataCycle {
+        let n = Int(round(effectiveDate.timeIntervalSince(Self.epoch) / Self.length))
+        return DataCycle(cyclesFromEpoch: n - 1)
+    }
+
     public func contains(_ date: Date) -> Bool {
         date >= effectiveDate && date < expirationDate
     }

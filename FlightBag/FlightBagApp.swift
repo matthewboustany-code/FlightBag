@@ -6,8 +6,25 @@
 import SwiftUI
 import SwiftData
 
+/// Exists only to catch the background-URLSession relaunch: when downloads
+/// finish while the app is dead, iOS relaunches it and hands over a
+/// completion handler that DownloadService calls once the session's events
+/// drain.
+final class AppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        MainActor.assumeIsolated {
+            DownloadService.backgroundCompletionHandler = completionHandler
+        }
+    }
+}
+
 @main
 struct FlightBagApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var environment = AppEnvironment()
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("adsbEnabled") private var adsbEnabled = true

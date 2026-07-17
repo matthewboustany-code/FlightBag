@@ -13,3 +13,7 @@ DerivedData/
 # Secrets — never commit API keys (FAA NOTAM, Leidos)
 .env
 .env.*
+
+# Generated download artifacts (multi-GB MBTiles/zips) — keep the dir, not the contents
+Server/Public/artifacts/*
+!Server/Public/artifacts/.gitkeep

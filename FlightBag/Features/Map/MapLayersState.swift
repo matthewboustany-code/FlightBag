@@ -120,6 +120,11 @@ final class MapLayersState {
     /// Downloaded tile sets found on disk; refreshed when the map appears.
     var availableCharts: [ChartStore.ChartSet] = []
 
+    /// Downloaded offline basemaps, drawn under everything else. On by
+    /// default — the layer only exists once the user downloads it.
+    var basemapEnabled = true
+    var availableBasemaps: [ChartStore.ChartSet] = []
+
     /// Downloaded tile sets backing the selected chart kind (offline wins
     /// over streaming).
     var offlineSetsForSelectedChart: [ChartStore.ChartSet] {

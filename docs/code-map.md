@@ -30,6 +30,10 @@ Launch args seed deterministic state for `xcrun simctl` screenshots:
 | `-airportsDemoOpen KAUS` | deep-link to an airport detail page |
 | `-weatherDemoOffline YES` | failing weather provider, to exercise cached/FIS-B paths |
 | `-flightsDemoSeed YES -flightsDemoScreen plan\|filing\|navlog\|map` | flights workflow |
+| `-serverBaseURL http://127.0.0.1:8080` | point ManifestClient/downloads at a local Vapor server |
+| `-downloadsDemoSeed YES` / `-downloadsDemoOpen US-TX` | fake manifest + download states; deep-link a region detail |
+| `-downloadsDemoAutostart US-TX` | really download a region's every published kind (needs `-serverBaseURL`) |
+| `-mapDemoChart none` | deselect the chart layer (e.g. to see the offline basemap alone) |
 
 For live ADS-B behavior, run `swift run gdl90sim` (in `Packages/FlightBagCore`)
 alongside the app. Note the simulator persists `adsbEnabled`; if the receiver
@@ -51,8 +55,12 @@ touch GRDB or providers directly.
 
 ### Services (`Services/`) — the app's data layer
 - `AeroDatabase.swift` (~450 ln, largest service) — GRDB read-only wrapper over per-cycle `aero.sqlite`. FTS5 search (`SearchResult`), `AirportDetail`, map queries (`MapWaypoint`, `AirwayLine`), airspace R*Tree lookups. Conforms to `WaypointResolving` for the route parser.
-- `ChartStore.swift` — discovers downloaded MBTiles chart sets (`ChartSet`)
+- `ChartStore.swift` — discovers downloaded MBTiles chart sets (`ChartSet`) and offline basemaps (`basemap_*` prefix); per-tree byte counts
 - `PlateStore.swift` — actor; downloads/caches terminal procedure PDFs
+- `DownloadCenter.swift` — `@MainActor @Observable` region-download orchestrator: manifest state, per-product phases, sha256 verify + install into `cycles/{cycle}/…`, refcounted region delete, old-cycle eviction; persists intent/facts in `downloads/state.json`; `chartsVersion` counter drives map/storage refresh
+- `DownloadService.swift` — background `URLSession` (`Me.FlightBag.downloads`): resume data, relaunch reattach via `taskDescription` = product id; AppDelegate in `FlightBagApp.swift` catches `handleEventsForBackgroundURLSession`
+- `ManifestClient.swift` — `ServerConfig` (UserDefaults `serverBaseURL`) + `/v1/manifest` fetch with offline JSON cache
+- `ZipExtractor.swift` — minimal zip reader (stored/deflate, no zip64) for per-state plate bundles
 - `WeatherStore.swift` — actor; METAR/TAF fetch + cache (`StationWeather`)
 - `AdvisoryStore.swift` — fetches TFR/SIGMET/G-AIRMET via FBProviders
 - `AirspaceStore.swift` — loads airspace polygons for map viewport
@@ -83,7 +91,7 @@ touch GRDB or providers directly.
 
 **Airports** — `AirportsHomeView` (search) → `AirportDetailView` → `WeatherSection`, `PlatesSection`, `PlateViewerView` (PDF)
 
-**Downloads** — `DownloadsHomeView.swift` + `FreshnessBadge` (AIRAC cycle status)
+**Downloads** — `DownloadsHomeView.swift` (region rows, storage split, `FreshnessBadge`, `productFreshness` honoring 56-day IFR expirations) → `RegionListView.swift` (manifest-driven state picker) → `RegionDetailView.swift` (chart-type toggles, per-product progress/pause/resume, refcount-aware delete)
 
 **Settings** — `SettingsHomeView.swift` (thin)
 
@@ -109,9 +117,10 @@ package dir) — the XCUITest ban applies only to the app's UI tests.
 
 ## Server (`Server/`)
 
-- `routes.swift` — `/v1/manifest` (download manifest, products TBD) and `/v1/airports/:id/weather` (cached METAR/TAF proxy)
-- `Commands/IngestCommands.swift` — CLI entry points: `ingest-nasr`, `ingest-dtpp`, `build-manifest`
-- `Ingest/` — `NASRIngestor` (~380 ln, FAA NASR CSV → sqlite), `DTPPIngestor` (plates), `AeroDatabaseBuilder` (builds per-cycle `aero.sqlite`), `TilePipeline` (chart tiles → MBTiles), `CSVTable` (parsing helper)
+- `routes.swift` — `/v1/manifest` (serves `Public/artifacts/manifest.json`, empty fallback) and `/v1/airports/:id/weather` (cached METAR/TAF proxy); JSON wire format is ISO8601 (set in `configure.swift`, which also mounts `FileMiddleware` over `Public/` — range requests included, so background downloads resume)
+- `Commands/IngestCommands.swift` — CLI entry points: `ingest-nasr`, `ingest-dtpp`, `ingest-tiles` (`--set vfr|ifr-low|ifr-high`, `--chart`/`--panel`), `ingest-basemap`, `bundle-plates --region US-XX --db aero.sqlite`, `build-manifest --base-url`
+- `Ingest/` — `NASRIngestor` (~380 ln, FAA NASR CSV → sqlite), `DTPPIngestor` (plates), `AeroDatabaseBuilder` (builds per-cycle `aero.sqlite`), `TilePipeline` (`Source`: sectional / enroute low+high / Natural Earth basemap → MBTiles; enroute editions are 56-day, get `.expires` sidecars and `resolveEditionCycle`), `PlateBundler` (per-state plate zips, `{airportId}/{pdfName}` layout matching PlateStore), `ManifestBuilder` (artifact tree → manifest: sha256 sidecar cache, next-cycle + carry-forward), `ChartCatalog` (regions + sectional→state fallback table), `RegionBounds` (MBTiles `bounds` ∩ state bboxes → `regionIds`), `CSVTable` (parsing helper)
+- Artifact layout: `Public/artifacts/{cycle}/{tiles|plates|basemap|db}/…` + `manifest.json` (gitignored; maps 1:1 to object-store keys later)
 
 ## Where to start for common tasks
 
@@ -126,4 +135,5 @@ package dir) — the XCUITest ban applies only to the app's UI tests.
 | GDL90/FIS-B bit layouts | FBGDL90 / FBFISB targets; drive with `swift run gdl90sim` |
 | Ownship position | `GDL90PositionSource.swift` (`CompositePositionSource` is the one views read) |
 | New data in `aero.sqlite` | `AeroDatabaseBuilder.swift` (server) **and** `AeroDatabase.swift` (app) — schema must match |
-| Downloads / cycles | FBModels `DataCycle` + `DownloadManifest`, `DownloadsHomeView.swift` |
+| Downloads / cycles | FBModels `DataCycle` + `DownloadManifest`/`Region`, `DownloadCenter.swift`, `DownloadsHomeView.swift` |
+| Chart-region downloads end-to-end | server `ManifestBuilder`/`ChartCatalog` → app `ManifestClient` → `DownloadCenter` → `ChartStore` (map picks tiles up via `chartsVersion`) |

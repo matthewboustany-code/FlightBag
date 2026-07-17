@@ -97,6 +97,8 @@ struct EFBMapView: UIViewRepresentable {
         private var chartOverlays: [MKTileOverlay] = []
         private var chartKey: String?
         private var radarOverlay: MKTileOverlay?
+        private var basemapOverlays: [MBTilesOverlay] = []
+        private var basemapKey: String?
         private var fisbRadarOverlay: FISBRadarOverlay?
         private var fisbRadarKey: Int?
         private var advisoryOverlays: [AdvisoryPolygon] = []
@@ -119,8 +121,23 @@ struct EFBMapView: UIViewRepresentable {
         // MARK: Overlay stack
 
         func syncOverlays(on map: MKMapView, layers: MapLayersState) {
-            // Aeronautical chart (bottom of the aviation stack): offline
-            // MBTiles when downloaded, FAA streaming tiles otherwise.
+            // Offline basemap (bottom of everything): shaded-relief MBTiles
+            // that keep the map usable with no connectivity.
+            let basemapSets = layers.basemapEnabled ? layers.availableBasemaps : []
+            let newBasemapKey = basemapSets.map(\.id).joined(separator: ",")
+            if newBasemapKey != basemapKey {
+                basemapKey = newBasemapKey
+                for overlay in basemapOverlays { map.removeOverlay(overlay) }
+                basemapOverlays = basemapSets.compactMap { MBTilesOverlay(fileURL: $0.url) }
+                for overlay in basemapOverlays {
+                    map.insertOverlay(overlay, at: 0, level: .aboveRoads)
+                }
+                // Charts must sit above the rebuilt basemap; force a rebuild.
+                chartKey = nil
+            }
+
+            // Aeronautical chart: offline MBTiles when downloaded, FAA
+            // streaming tiles otherwise.
             let offlineSets = layers.offlineSetsForSelectedChart
             let key = (layers.chart?.rawValue ?? "none") + "|" + offlineSets.map(\.id).joined(separator: ",")
             if key != chartKey {
@@ -138,8 +155,9 @@ struct EFBMapView: UIViewRepresentable {
                             }
                         }
                     }
+                    // Above every basemap overlay, below radar/advisories.
                     for overlay in chartOverlays {
-                        map.insertOverlay(overlay, at: 0, level: .aboveRoads)
+                        map.insertOverlay(overlay, at: basemapOverlays.count, level: .aboveRoads)
                     }
                 }
             }

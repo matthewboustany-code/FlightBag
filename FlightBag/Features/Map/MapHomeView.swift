@@ -69,7 +69,6 @@ struct MapHomeView: View {
             if !UserDefaults.standard.bool(forKey: "mapDemoSkipLocation") {
                 environment.positionSource.activate()
             }
-            layers.availableCharts = ChartStore().availableCharts()
             // Launch-argument state for demos/automation, e.g.
             // `-mapDemoRadar YES -mapDemoFollow YES -mapDemoChart ifrlow`.
             let defaults = UserDefaults.standard
@@ -108,6 +107,12 @@ struct MapHomeView: View {
             if layers.anyAdvisoryEnabled {
                 await environment.advisoryStore.refreshIfStale()
             }
+        }
+        // Re-scan on first appearance and whenever a download installs or
+        // deletes chart tiles, so the map switches to offline immediately.
+        .task(id: environment.downloadCenter.chartsVersion) {
+            layers.availableCharts = environment.chartStore.availableCharts()
+            layers.availableBasemaps = environment.chartStore.availableBasemaps()
         }
         .sheet(item: $inspectedAdvisories) { inspected in
             AdvisoryInspectorSheet(advisories: inspected.advisories)
@@ -285,6 +290,10 @@ private struct LayersPanel: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+                }
+                if !layers.availableBasemaps.isEmpty {
+                    Toggle("Offline basemap", isOn: $layers.basemapEnabled)
+                        .accessibilityIdentifier("layers.basemap")
                 }
             }
             Section {

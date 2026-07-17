@@ -49,6 +49,15 @@ import Testing
         #expect(next > cycle)
     }
 
+    @Test func previousInvertsNext() {
+        let cycle = DataCycle.current(at: utcDate(2026, 7, 12))
+        #expect(cycle.next().previous() == cycle)
+        #expect(cycle.previous().expirationDate == cycle.effectiveDate)
+        // Crosses a year boundary correctly.
+        let firstOf2026 = DataCycle(id: "2601")!
+        #expect(firstOf2026.previous().year == 2025)
+    }
+
     @Test func freshnessBuckets() {
         let cycle = DataCycle.current(at: utcDate(2026, 7, 12))
         #expect(cycle.freshness(at: cycle.effectiveDate.addingTimeInterval(86400)) == .current)
