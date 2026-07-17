@@ -1,0 +1,13 @@
+# Keep the build context tiny: only Server/ sources and Packages/ matter.
+.git
+**/.build
+**/.swiftpm
+**/xcuserdata
+Server/Public/artifacts
+Server/ingest-work
+Server/logs
+FlightBag/
+FlightBagTests/
+FlightBagUITests/
+FlightBag.xcodeproj/
+docs/

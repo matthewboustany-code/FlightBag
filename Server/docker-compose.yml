@@ -1,0 +1,39 @@
+# FlightBag data server stack. Copy .env.example to .env first.
+#
+#   docker compose up -d server              # API + artifact hosting
+#   docker compose --profile ingest run --rm ingest   # one per-cycle build
+#
+# The ingest service is behind a profile so `up` never starts it; cron (or the
+# NAS task scheduler) triggers it daily via scripts/ingest-cron.sh and the
+# ingest-all command no-ops until a new cycle's FAA data is published.
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: Server/Dockerfile
+    image: flightbag-server
+    restart: unless-stopped
+    ports:
+      - "${FLIGHTBAG_PORT:-8080}:8080"
+    volumes:
+      - "${FLIGHTBAG_ARTIFACTS_DIR:-./Public/artifacts}:/app/Public/artifacts"
+
+  ingest:
+    profiles: ["ingest"]
+    build:
+      context: ..
+      dockerfile: Server/Dockerfile
+    image: flightbag-server
+    command: ["ingest-all"]
+    environment:
+      FLIGHTBAG_BASE_URL: "${FLIGHTBAG_BASE_URL:-http://127.0.0.1:8080}"
+      FLIGHTBAG_SECTIONALS: "${FLIGHTBAG_SECTIONALS:-none}"
+      FLIGHTBAG_REGIONS: "${FLIGHTBAG_REGIONS:-none}"
+      FLIGHTBAG_IFR_LOW_PANELS: "${FLIGHTBAG_IFR_LOW_PANELS:-none}"
+      FLIGHTBAG_IFR_HIGH_PANELS: "${FLIGHTBAG_IFR_HIGH_PANELS:-none}"
+      FLIGHTBAG_BASEMAP: "${FLIGHTBAG_BASEMAP:-auto}"
+      FLIGHTBAG_MIN_FREE_GB: "${FLIGHTBAG_MIN_FREE_GB:-50}"
+    volumes:
+      - "${FLIGHTBAG_ARTIFACTS_DIR:-./Public/artifacts}:/app/Public/artifacts"
+      - "${FLIGHTBAG_WORKDIR:-./ingest-work}:/work"

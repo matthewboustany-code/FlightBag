@@ -119,8 +119,10 @@ package dir) — the XCUITest ban applies only to the app's UI tests.
 
 - `routes.swift` — `/v1/manifest` (serves `Public/artifacts/manifest.json`, empty fallback) and `/v1/airports/:id/weather` (cached METAR/TAF proxy); JSON wire format is ISO8601 (set in `configure.swift`, which also mounts `FileMiddleware` over `Public/` — range requests included, so background downloads resume)
 - `Commands/IngestCommands.swift` — CLI entry points: `ingest-nasr`, `ingest-dtpp`, `ingest-tiles` (`--set vfr|ifr-low|ifr-high`, `--chart`/`--panel`), `ingest-basemap`, `bundle-plates --region US-XX --db aero.sqlite`, `build-manifest --base-url`
+- `Commands/IngestAllCommand.swift` — `ingest-all`: the scheduled-job orchestrator. Picks the target cycle itself (HEAD-probes whether the FAA published the next one), no-ops via a `{cycle}/.complete` marker, skips artifacts that already exist (rerun = resume), runs db → tiles → basemap → plates → manifest, and rebuilds the manifest when the calendar rolls into a pre-built cycle. Scope comes from `FLIGHTBAG_*` env vars (see `Server/.env.example`); the db always builds, charts are opt-in
 - `Ingest/` — `NASRIngestor` (~380 ln, FAA NASR CSV → sqlite), `DTPPIngestor` (plates), `AeroDatabaseBuilder` (builds per-cycle `aero.sqlite`), `TilePipeline` (`Source`: sectional / enroute low+high / Natural Earth basemap → MBTiles; enroute editions are 56-day, get `.expires` sidecars and `resolveEditionCycle`), `PlateBundler` (per-state plate zips, `{airportId}/{pdfName}` layout matching PlateStore), `ManifestBuilder` (artifact tree → manifest: sha256 sidecar cache, next-cycle + carry-forward), `ChartCatalog` (regions + sectional→state fallback table), `RegionBounds` (MBTiles `bounds` ∩ state bboxes → `regionIds`), `CSVTable` (parsing helper)
 - Artifact layout: `Public/artifacts/{cycle}/{tiles|plates|basemap|db}/…` + `manifest.json` (gitignored; maps 1:1 to object-store keys later)
+- Deployment: `Server/Dockerfile` (multi-stage; one image = serve + ingest, GDAL/zip/unzip in runtime stage; build context is the **repo root** for the FlightBagCore path dep), `Server/docker-compose.yml` (`server` service + `ingest` behind a compose profile), `Server/.env.example` (all `FLIGHTBAG_*` config, notably `FLIGHTBAG_BASE_URL` baked into manifest URLs), `Server/scripts/ingest-cron.sh` (daily cron trigger), `Server/DEPLOY.md` (NAS bring-up guide). Not yet exercised by a real Docker build — no container runtime on the dev Mac
 
 ## Where to start for common tasks
 
@@ -137,3 +139,4 @@ package dir) — the XCUITest ban applies only to the app's UI tests.
 | New data in `aero.sqlite` | `AeroDatabaseBuilder.swift` (server) **and** `AeroDatabase.swift` (app) — schema must match |
 | Downloads / cycles | FBModels `DataCycle` + `DownloadManifest`/`Region`, `DownloadCenter.swift`, `DownloadsHomeView.swift` |
 | Chart-region downloads end-to-end | server `ManifestBuilder`/`ChartCatalog` → app `ManifestClient` → `DownloadCenter` → `ChartStore` (map picks tiles up via `chartsVersion`) |
+| Deploying / operating the data server | `Server/DEPLOY.md`, then `docker-compose.yml` + `IngestAllCommand.swift` |

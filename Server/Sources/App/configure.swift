@@ -23,6 +23,7 @@ public func configure(_ app: Application) async throws {
     app.asyncCommands.use(IngestBasemapCommand(), as: "ingest-basemap")
     app.asyncCommands.use(BundlePlatesCommand(), as: "bundle-plates")
     app.asyncCommands.use(BuildManifestCommand(), as: "build-manifest")
+    app.asyncCommands.use(IngestAllCommand(), as: "ingest-all")
 
     try routes(app)
 }

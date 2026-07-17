@@ -13,6 +13,11 @@ DerivedData/
 # Secrets — never commit API keys (FAA NOTAM, Leidos)
 .env
 .env.*
+!Server/.env.example
+
+# Server deployment scratch (ingest intermediates, cron logs)
+Server/ingest-work/
+Server/logs/
 
 # Generated download artifacts (multi-GB MBTiles/zips) — keep the dir, not the contents
 Server/Public/artifacts/*

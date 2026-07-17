@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import FBModels
 
 /// Converts FAA raster charts (Lambert Conformal GeoTIFF) into Web-Mercator
@@ -173,7 +176,9 @@ struct TilePipeline {
         logger("MBTiles written to \(output)")
     }
 
-    private func remoteExists(_ url: URL) async throws -> Bool {
+    /// HEAD-probe for an artifact's existence; also used by `ingest-all` to
+    /// detect whether the FAA has published the next cycle's charts yet.
+    func remoteExists(_ url: URL) async throws -> Bool {
         var request = URLRequest(url: url)
         request.httpMethod = "HEAD"
         request.setValue("Mozilla/5.0 (Macintosh) FlightBag-Ingest/1.0", forHTTPHeaderField: "User-Agent")
