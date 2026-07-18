@@ -15,6 +15,7 @@ struct EFBMapView: UIViewRepresentable {
     /// Same, for the FIS-B mosaic.
     var fisbRadarVersion: Int = 0
     var route: ActiveMapRoute?
+    var activePlate: PlateMetadata?
     @Binding var followOwnship: Bool
     @Binding var trackUp: Bool
     var onSelectAirport: (String) -> Void
@@ -47,6 +48,7 @@ struct EFBMapView: UIViewRepresentable {
         context.coordinator.map = map
         context.coordinator.aeroDatabase = environment.aeroDatabase
         context.coordinator.airspaceStore = environment.airspaceStore
+        context.coordinator.plateStore = environment.plateStore
 
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
         tap.cancelsTouchesInView = false
@@ -66,6 +68,8 @@ struct EFBMapView: UIViewRepresentable {
         coordinator.syncAdvisories(on: map, layers: layers, store: environment.advisoryStore)
         coordinator.refreshAeronautical(on: map)
         coordinator.syncRoute(on: map, route: route)
+        coordinator.onPlateUnavailable = { [environment] in environment.activePlateOverlay = nil }
+        coordinator.syncPlateOverlay(on: map, plate: activePlate, layers: layers)
         coordinator.syncOwnship(on: map, position: position, followOwnship: followOwnship, trackUp: trackUp)
         coordinator.syncTraffic(
             on: map,
@@ -89,9 +93,11 @@ struct EFBMapView: UIViewRepresentable {
         weak var map: MKMapView?
         var aeroDatabase: AeroDatabase?
         var airspaceStore: AirspaceStore?
+        var plateStore: PlateStore?
         var layersState: MapLayersState?
         var onSelectAirport: (String) -> Void = { _ in }
         var onInspectAdvisories: ([AdvisoryDisplayInfo]) -> Void = { _ in }
+        var onPlateUnavailable: () -> Void = {}
         var airportsEnabled = true
 
         private var chartOverlays: [MKTileOverlay] = []
@@ -110,6 +116,9 @@ struct EFBMapView: UIViewRepresentable {
         private var aeroTask: Task<Void, Never>?
         private var routePolyline: MKPolyline?
         private var routeKey: ActiveMapRoute?
+        private var plateOverlay: PlateOverlay?
+        private var plateKey: String?
+        private var plateTask: Task<Void, Never>?
         private var overlayAlphas: [ObjectIdentifier: CGFloat] = [:]
         private let ownshipAnnotation = OwnshipAnnotation()
         private var ownshipOnMap = false
@@ -360,12 +369,66 @@ struct EFBMapView: UIViewRepresentable {
             )
         }
 
+        // MARK: Plate overlay
+
+        /// Pins/unpins the active approach plate. Fetch (PlateStore caches),
+        /// georef parse, and rasterization all happen off the main actor;
+        /// failures (non-georeferenced chart, evicted cycle while offline)
+        /// clear the request via `onPlateUnavailable`.
+        func syncPlateOverlay(on map: MKMapView, plate: PlateMetadata?, layers: MapLayersState) {
+            if plate?.id != plateKey {
+                plateKey = plate?.id
+                plateTask?.cancel()
+                if let existing = plateOverlay {
+                    map.removeOverlay(existing)
+                    plateOverlay = nil
+                }
+                guard let plate, let store = plateStore else {
+                    if plate != nil { onPlateUnavailable() }
+                    return
+                }
+                plateTask = Task { [weak self, weak map] in
+                    var built: PlateOverlayImage?
+                    if let url = try? await store.fetch(plate) {
+                        built = await Task.detached(priority: .userInitiated) {
+                            guard let georef = PlateGeoreference.parse(url: url),
+                                  let image = PlateRasterizer.rasterize(url: url, georeference: georef) else { return nil }
+                            return PlateOverlayImage(image: image, corners: georef.corners)
+                        }.value
+                    }
+                    guard let self, let map, !Task.isCancelled, self.plateKey == plate.id else { return }
+                    guard let built else {
+                        self.plateKey = nil
+                        self.onPlateUnavailable()
+                        return
+                    }
+                    let overlay = PlateOverlay(image: built.image, corners: built.corners, plateId: plate.id)
+                    self.plateOverlay = overlay
+                    map.addOverlay(overlay, level: .aboveLabels)
+                    self.setAlpha(CGFloat(layers.plateOpacity), for: overlay, on: map)
+                    map.setVisibleMapRect(
+                        overlay.boundingMapRect,
+                        edgePadding: UIEdgeInsets(top: 40, left: 40, bottom: 40, right: 40),
+                        animated: true
+                    )
+                }
+            }
+            if let overlay = plateOverlay {
+                setAlpha(CGFloat(layers.plateOpacity), for: overlay, on: map)
+            }
+        }
+
         private func setAlpha(_ alpha: CGFloat, for overlay: MKOverlay, on map: MKMapView) {
             overlayAlphas[ObjectIdentifier(overlay)] = alpha
             switch map.renderer(for: overlay) {
             case let renderer as MKTileOverlayRenderer:
                 renderer.alpha = alpha
             case let renderer as FISBRadarRenderer:
+                if renderer.alpha != alpha {
+                    renderer.alpha = alpha
+                    renderer.setNeedsDisplay()
+                }
+            case let renderer as PlateOverlayRenderer:
                 if renderer.alpha != alpha {
                     renderer.alpha = alpha
                     renderer.setNeedsDisplay()
@@ -378,6 +441,13 @@ struct EFBMapView: UIViewRepresentable {
         nonisolated func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let radar = overlay as? FISBRadarOverlay {
                 let renderer = FISBRadarRenderer(overlay: radar)
+                MainActor.assumeIsolated {
+                    renderer.alpha = overlayAlphas[ObjectIdentifier(overlay)] ?? 1.0
+                }
+                return renderer
+            }
+            if let plate = overlay as? PlateOverlay {
+                let renderer = PlateOverlayRenderer(overlay: plate)
                 MainActor.assumeIsolated {
                     renderer.alpha = overlayAlphas[ObjectIdentifier(overlay)] ?? 1.0
                 }
@@ -506,29 +576,38 @@ struct EFBMapView: UIViewRepresentable {
         private func refreshAirportAnnotations(on map: MKMapView) {
             guard airportsEnabled, let db = aeroDatabase else { return }
             let region = map.region
-            // Only at usable zoom; a whole-CONUS view would fetch thousands.
-            guard region.span.latitudeDelta < 3.5 else {
+            let span = max(region.span.latitudeDelta, region.span.longitudeDelta)
+            // Importance-tiered density: only major airports far out,
+            // everything as the user zooms in.
+            let maxTier: Int
+            let limit: Int
+            switch span {
+            case ..<1.5: maxTier = 2; limit = 80
+            case ..<3.5: maxTier = 1; limit = 40
+            case ..<8.0: maxTier = 0; limit = 15
+            default:
                 clearAirportAnnotations(on: map)
                 return
             }
             annotationTask?.cancel()
             annotationTask = Task { [weak self, weak map] in
-                guard let results = try? await db.airportsNear(
+                guard let results = try? await db.mapAirportsNear(
                     latitude: region.center.latitude,
                     longitude: region.center.longitude,
-                    spanDegrees: max(region.span.latitudeDelta, region.span.longitudeDelta) / 2 + 0.1,
-                    limit: 80
+                    spanDegrees: span / 2 + 0.1,
+                    maxTier: maxTier,
+                    limit: limit
                 ), let self, let map, !Task.isCancelled else { return }
 
                 var keep = Set<String>()
                 for result in results {
-                    guard let lat = result.latitude, let lon = result.longitude else { continue }
                     keep.insert(result.id)
                     if self.airportAnnotations[result.id] == nil {
                         let annotation = AirportAnnotation(
                             airportId: result.displayIdentifier,
                             title: result.displayIdentifier,
-                            coordinate: CLLocationCoordinate2D(latitude: lat, longitude: lon)
+                            coordinate: CLLocationCoordinate2D(latitude: result.latitude, longitude: result.longitude),
+                            tier: result.tier
                         )
                         self.airportAnnotations[result.id] = annotation
                         map.addAnnotation(annotation)
@@ -574,16 +653,26 @@ final class AirportAnnotation: NSObject, MKAnnotation {
     let airportId: String
     let title: String?
     let coordinate: CLLocationCoordinate2D
+    /// Importance tier from `AeroDatabase.MapAirport`: 0 major … 2 everything.
+    let tier: Int
 
-    init(airportId: String, title: String, coordinate: CLLocationCoordinate2D) {
+    init(airportId: String, title: String, coordinate: CLLocationCoordinate2D, tier: Int) {
         self.airportId = airportId
         self.title = title
         self.coordinate = coordinate
+        self.tier = tier
     }
 }
 
+/// Airport symbol with its identifier lettered underneath, sized by
+/// importance tier. Built from subviews (not the `image` property) so the
+/// view's bounds enclose symbol + label and MapKit collision declutters the
+/// label too.
 final class AirportAnnotationView: MKAnnotationView {
     static let reuseId = "airport"
+
+    private let symbolView = UIImageView()
+    private let label = UILabel()
 
     override var annotation: MKAnnotation? {
         didSet { configure() }
@@ -591,18 +680,34 @@ final class AirportAnnotationView: MKAnnotationView {
 
     override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
         super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        addSubview(symbolView)
+        addSubview(label)
         configure()
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     private func configure() {
-        let config = UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
-        image = UIImage(systemName: "circle.circle", withConfiguration: config)?
-            .withTintColor(.systemIndigo, renderingMode: .alwaysOriginal)
+        let tier = (annotation as? AirportAnnotation)?.tier ?? 2
+        let pointSize: CGFloat = tier == 0 ? 16 : tier == 1 ? 13 : 11
+        let config = UIImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold)
+        symbolView.image = UIImage(
+            systemName: tier == 0 ? "circle.circle.fill" : "circle.circle",
+            withConfiguration: config
+        )?.withTintColor(.systemIndigo, renderingMode: .alwaysOriginal)
+        symbolView.sizeToFit()
+
+        label.attributedText = MapLabelStyle.halo(
+            (annotation as? AirportAnnotation)?.airportId ?? "",
+            font: .systemFont(ofSize: 10, weight: .bold),
+            color: .systemIndigo
+        )
+        label.sizeToFit()
+
+        MapLabelStyle.layoutSymbolAboveLabel(in: self, symbol: symbolView, label: label)
         canShowCallout = false
-        displayPriority = .defaultLow
-        collisionMode = .circle
+        displayPriority = MKFeatureDisplayPriority(rawValue: tier == 0 ? 800 : tier == 1 ? 600 : 400)
+        collisionMode = .rectangle
     }
 }
 

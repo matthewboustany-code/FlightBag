@@ -140,28 +140,8 @@ struct AirportDetailView: View {
         }
     }
 
-    private struct FrequencyGroup {
-        let use: String
-        let values: [String]
-    }
-
-    /// Order pilots expect: ATIS, clearance, ground, tower, approach…
-    private func groupedFrequencies(_ frequencies: [Frequency]) -> [FrequencyGroup] {
-        let order = ["ATIS", "CD", "GND", "TWR", "CTAF", "APP", "DEP", "APP/DEP", "EMERG"]
-        let grouped = Dictionary(grouping: frequencies, by: \.use)
-        return grouped
-            .map { use, freqs in
-                // VHF first; pilots rarely need the UHF duplicates.
-                let sorted = freqs.sorted { $0.kHz < $1.kHz }
-                let vhf = sorted.filter { $0.kHz < 138_000 }
-                let display = (vhf.isEmpty ? sorted : vhf).map(\.megahertzDisplay)
-                return FrequencyGroup(use: use, values: display)
-            }
-            .sorted { a, b in
-                let ai = order.firstIndex(of: a.use) ?? order.count
-                let bi = order.firstIndex(of: b.use) ?? order.count
-                return ai == bi ? a.use < b.use : ai < bi
-            }
+    private func groupedFrequencies(_ frequencies: [Frequency]) -> [FrequencyDisplay.Group] {
+        FrequencyDisplay.grouped(frequencies)
     }
 
     private func surfaceName(_ code: String) -> String {
@@ -174,5 +154,33 @@ struct AirportDetailView: View {
         case "WATER": "Water"
         default: code
         }
+    }
+}
+
+enum FrequencyDisplay {
+    struct Group {
+        let use: String
+        let values: [String]
+    }
+
+    /// Groups by use, ordered the way pilots expect (ATIS, clearance,
+    /// ground, tower, approach…). Every published frequency is shown —
+    /// VHF first, then UHF, so joint-use fields see both bands.
+    static func grouped(_ frequencies: [Frequency]) -> [Group] {
+        let order = ["ATIS", "CD", "GND", "TWR", "CTAF", "APP", "DEP", "APP/DEP", "EMERG"]
+        return Dictionary(grouping: frequencies, by: \.use)
+            .map { use, freqs in
+                let sorted = freqs.sorted {
+                    let aUHF = $0.kHz >= 138_000
+                    let bUHF = $1.kHz >= 138_000
+                    return aUHF == bUHF ? $0.kHz < $1.kHz : !aUHF
+                }
+                return Group(use: use, values: sorted.map(\.megahertzDisplay))
+            }
+            .sorted { a, b in
+                let ai = order.firstIndex(of: a.use) ?? order.count
+                let bi = order.firstIndex(of: b.use) ?? order.count
+                return ai == bi ? a.use < b.use : ai < bi
+            }
     }
 }

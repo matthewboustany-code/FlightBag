@@ -20,10 +20,44 @@ final class WaypointAnnotation: NSObject, MKAnnotation {
     }
 }
 
+/// Shared styling for annotation identifier labels: a white halo keeps the
+/// lettering legible over dense chart ink, and a symbol-above-label layout
+/// that sizes the view's bounds around both so MapKit collision declutters
+/// the label, not just the symbol.
+enum MapLabelStyle {
+    static func halo(_ text: String, font: UIFont, color: UIColor) -> NSAttributedString {
+        let shadow = NSShadow()
+        shadow.shadowColor = UIColor.white.withAlphaComponent(0.9)
+        shadow.shadowBlurRadius = 2
+        // Negative strokeWidth = stroke AND fill.
+        return NSAttributedString(string: text, attributes: [
+            .font: font,
+            .foregroundColor: color,
+            .strokeColor: UIColor.white,
+            .strokeWidth: -3.5,
+            .shadow: shadow,
+        ])
+    }
+
+    /// Centers the symbol over `coordinate` (via `centerOffset`) with the
+    /// label directly beneath, and expands the view's bounds to contain both.
+    static func layoutSymbolAboveLabel(in view: MKAnnotationView, symbol: UIImageView, label: UILabel, spacing: CGFloat = 1) {
+        let symbolSize = symbol.frame.size
+        let labelSize = label.frame.size
+        let width = max(symbolSize.width, labelSize.width)
+        let height = symbolSize.height + spacing + labelSize.height
+        view.bounds = CGRect(x: 0, y: 0, width: width, height: height)
+        symbol.frame.origin = CGPoint(x: (width - symbolSize.width) / 2, y: 0)
+        label.frame.origin = CGPoint(x: (width - labelSize.width) / 2, y: symbolSize.height + spacing)
+        view.centerOffset = CGPoint(x: 0, y: (height - symbolSize.height) / 2)
+    }
+}
+
 /// Chart-style waypoint symbol with the identifier lettered underneath.
 final class WaypointAnnotationView: MKAnnotationView {
     static let reuseId = "waypoint"
 
+    private let symbolView = UIImageView()
     private let label = UILabel()
 
     override var annotation: MKAnnotation? {
@@ -32,8 +66,7 @@ final class WaypointAnnotationView: MKAnnotationView {
 
     override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
         super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
-        label.font = UIFont.monospacedSystemFont(ofSize: 9, weight: .semibold)
-        label.textColor = .secondaryLabel
+        addSubview(symbolView)
         addSubview(label)
         configure()
     }
@@ -49,14 +82,22 @@ final class WaypointAnnotationView: MKAnnotationView {
             isNavaid = false
         }
         let config = UIImage.SymbolConfiguration(pointSize: isNavaid ? 11 : 8, weight: .bold)
-        image = UIImage(
+        symbolView.image = UIImage(
             systemName: isNavaid ? "hexagon" : "triangle",
             withConfiguration: config
         )?.withTintColor(isNavaid ? .systemIndigo : .darkGray, renderingMode: .alwaysOriginal)
+        symbolView.sizeToFit()
 
-        label.text = annotation.waypoint.identifier
+        // Fixed dark ink (not .label): the white halo is the contrast layer,
+        // and dark-mode .label would turn white-on-white.
+        label.attributedText = MapLabelStyle.halo(
+            annotation.waypoint.identifier,
+            font: .monospacedSystemFont(ofSize: 10, weight: .semibold),
+            color: UIColor(white: 0.15, alpha: 1)
+        )
         label.sizeToFit()
-        label.frame.origin = CGPoint(x: -label.frame.width / 2 + (image?.size.width ?? 0) / 2, y: (image?.size.height ?? 0) + 1)
+
+        MapLabelStyle.layoutSymbolAboveLabel(in: self, symbol: symbolView, label: label)
         displayPriority = isNavaid ? .defaultHigh : .defaultLow
         collisionMode = .rectangle
     }

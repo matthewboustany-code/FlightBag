@@ -49,6 +49,9 @@ final class AppEnvironment {
 
     /// Route drawn on the map tab; set from a flight, cleared from the map.
     var activeMapRoute: ActiveMapRoute?
+    /// Approach plate pinned to the map; set from the plate viewer, cleared
+    /// from the map (or automatically if the chart can't be loaded).
+    var activePlateOverlay: PlateMetadata?
     /// One-shot tab-switch request ("Show on map"); RootTabView consumes it.
     var requestedTab: AppTab?
 

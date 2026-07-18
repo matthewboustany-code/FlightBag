@@ -7,12 +7,12 @@ import FBFISB
 /// The EFB map screen: chart/radar layer stack, ownship, airport tap-through.
 struct MapHomeView: View {
     @Environment(AppEnvironment.self) private var environment
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var layers = MapLayersState()
     @State private var followOwnship = false
     @State private var trackUp = false
-    @State private var selectedAirportId: String?
     @State private var showLayersPanel = false
-    @State private var inspectedAdvisories: InspectedAdvisories?
+    @State private var inspection: MapInspection?
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -22,10 +22,11 @@ struct MapHomeView: View {
                 trafficVersion: environment.trafficStore.membershipVersion,
                 fisbRadarVersion: environment.fisbRadarStore.dataVersion,
                 route: environment.activeMapRoute,
+                activePlate: environment.activePlateOverlay,
                 followOwnship: $followOwnship,
                 trackUp: $trackUp,
-                onSelectAirport: { selectedAirportId = $0 },
-                onInspectAdvisories: { inspectedAdvisories = InspectedAdvisories(advisories: $0) }
+                onSelectAirport: { inspection = .airport(id: $0) },
+                onInspectAdvisories: { inspection = .advisories(InspectedAdvisories(advisories: $0)) }
             )
             .ignoresSafeArea(edges: .bottom)
 
@@ -61,8 +62,25 @@ struct MapHomeView: View {
             .padding(.top, 8)
         }
         .overlay(alignment: .bottomLeading) {
-            statusStrip
+            // The compact bottom card covers this corner; hide rather than
+            // stack.
+            if !(inspection != nil && sizeClass == .compact) {
+                statusStrip
+            }
         }
+        .overlay(alignment: sizeClass == .compact ? .bottom : .leading) {
+            if let inspection {
+                MapInfoPanel(inspection: inspection) { self.inspection = nil }
+                    .frame(maxWidth: sizeClass == .compact ? .infinity : 380)
+                    .containerRelativeFrame(.vertical) { length, _ in
+                        length * (sizeClass == .compact ? 0.42 : 0.82)
+                    }
+                    .padding(.horizontal, sizeClass == .compact ? 6 : 0)
+                    .padding(.leading, sizeClass == .compact ? 0 : 12)
+                    .transition(.move(edge: sizeClass == .compact ? .bottom : .leading).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy, value: inspection)
         .task {
             // Screenshot automation skips the location prompt, which would
             // otherwise sit modally over the map.
@@ -100,9 +118,36 @@ struct MapHomeView: View {
                 layers.enabledAirspaceCategories = Set(Airspace.Category.allCases)
             }
             if defaults.bool(forKey: "mapDemoPanel") { showLayersPanel = true }
+            if let inspectId = defaults.string(forKey: "mapDemoInspect") {
+                inspection = .airport(id: inspectId)
+            }
+            if defaults.bool(forKey: "mapDemoInspectAdvisories") {
+                inspection = .advisories(InspectedAdvisories(advisories: [
+                    AdvisoryDisplayInfo(
+                        color: .systemRed,
+                        title: "TFR 6/2233",
+                        subtitle: "Temporary flight restriction · SFC–3,000 ft",
+                        detail: "Demo TFR — stadium event.\nEffective now through 2359Z."
+                    ),
+                    AdvisoryDisplayInfo(
+                        color: .systemOrange,
+                        title: "CONVECTIVE SIGMET 4C",
+                        subtitle: "Thunderstorms · FL450 and below",
+                        detail: "Demo SIGMET — line of storms moving east 25 kt."
+                    ),
+                ]))
+            }
             if defaults.bool(forKey: "adsbDemoSeed") {
                 seedDemoTraffic()
                 seedDemoRadar()
+            }
+            // `-mapDemoPlate KAUS` pins the airport's first approach plate
+            // (downloads it if needed — the simulator has internet).
+            if let plateAirport = defaults.string(forKey: "mapDemoPlate"),
+               let db = environment.aeroDatabase,
+               let detail = try? await db.airportDetail(id: plateAirport),
+               let approach = detail.plates.first(where: { $0.category == .approach }) {
+                environment.activePlateOverlay = approach
             }
             if layers.anyAdvisoryEnabled {
                 await environment.advisoryStore.refreshIfStale()
@@ -113,19 +158,6 @@ struct MapHomeView: View {
         .task(id: environment.downloadCenter.chartsVersion) {
             layers.availableCharts = environment.chartStore.availableCharts()
             layers.availableBasemaps = environment.chartStore.availableBasemaps()
-        }
-        .sheet(item: $inspectedAdvisories) { inspected in
-            AdvisoryInspectorSheet(advisories: inspected.advisories)
-        }
-        .sheet(item: $selectedAirportId) { airportId in
-            NavigationStack {
-                AirportDetailView(airportId: airportId)
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Button("Done") { selectedAirportId = nil }
-                        }
-                    }
-            }
         }
     }
 
@@ -226,6 +258,16 @@ struct MapHomeView: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("map.clearRoute")
             }
+            if let plate = environment.activePlateOverlay {
+                Button {
+                    environment.activePlateOverlay = nil
+                } label: {
+                    Label(plate.chartName, systemImage: "xmark.circle.fill")
+                        .foregroundStyle(.teal)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("map.clearPlate")
+            }
             if let position = environment.positionSource.position {
                 Label(position.sourceName, systemImage: position.sourceName == "ADS-B"
                     ? "antenna.radiowaves.left.and.right" : "location.fill")
@@ -255,10 +297,6 @@ struct MapHomeView: View {
         }
         .buttonStyle(.plain)
     }
-}
-
-extension String: @retroactive Identifiable {
-    public var id: String { self }
 }
 
 /// Layer toggles + opacity. Traffic and FIS-B join this panel in Phase 4.
@@ -294,6 +332,23 @@ private struct LayersPanel: View {
                 if !layers.availableBasemaps.isEmpty {
                     Toggle("Offline basemap", isOn: $layers.basemapEnabled)
                         .accessibilityIdentifier("layers.basemap")
+                }
+            }
+            if let plate = environment.activePlateOverlay {
+                Section("Approach Plate") {
+                    LabeledContent("Chart") {
+                        Text(plate.chartName)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    LabeledContent("Opacity") {
+                        Slider(value: $layers.plateOpacity, in: 0.2...1)
+                            .accessibilityIdentifier("layers.plateOpacity")
+                    }
+                    Button("Remove from Map", role: .destructive) {
+                        environment.activePlateOverlay = nil
+                    }
+                    .accessibilityIdentifier("layers.removePlate")
                 }
             }
             Section {
@@ -441,51 +496,10 @@ private struct LayersPanel: View {
     }
 }
 
-/// Identifiable wrapper so tapped advisories drive a sheet.
+/// Identifiable wrapper for a batch of tapped advisories.
 struct InspectedAdvisories: Identifiable {
     let id = UUID()
     var advisories: [AdvisoryDisplayInfo]
-}
-
-/// Details for advisories under a map tap.
-private struct AdvisoryInspectorSheet: View {
-    let advisories: [AdvisoryDisplayInfo]
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            List(advisories) { advisory in
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(spacing: 8) {
-                        Circle()
-                            .fill(Color(advisory.color))
-                            .frame(width: 10, height: 10)
-                        Text(advisory.title)
-                            .font(.headline)
-                    }
-                    if !advisory.subtitle.isEmpty {
-                        Text(advisory.subtitle)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                    if !advisory.detail.isEmpty {
-                        Text(advisory.detail)
-                            .font(.callout.monospaced())
-                            .textSelection(.enabled)
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-            .navigationTitle(advisories.count == 1 ? "Advisory" : "\(advisories.count) Advisories")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
-        .presentationDetents([.medium, .large])
-    }
 }
 
 #Preview {

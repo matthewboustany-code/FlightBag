@@ -73,6 +73,8 @@ final class MapLayersState {
     /// The selected aeronautical chart; nil shows the base map only.
     var chart: ChartKind? = .vfrSectional
     var chartOpacity = 1.0
+    /// Opacity of a plate pinned via `AppEnvironment.activePlateOverlay`.
+    var plateOpacity = 0.7
     var radarEnabled = false
     var radarOpacity = 0.7
     /// Where radar comes from: the internet mosaic or the ADS-B receiver's

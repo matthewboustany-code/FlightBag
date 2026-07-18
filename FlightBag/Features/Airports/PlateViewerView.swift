@@ -10,6 +10,7 @@ struct PlateViewerView: View {
     @Environment(AppEnvironment.self) private var environment
     @State private var documentURL: URL?
     @State private var loadError = false
+    @State private var georeference: PlateGeoreference?
     @AppStorage("plateNightMode") private var nightMode = false
 
     var body: some View {
@@ -35,6 +36,19 @@ struct PlateViewerView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
+                    environment.activePlateOverlay = plate
+                    environment.requestedTab = .map
+                } label: {
+                    Image(systemName: "map")
+                }
+                .disabled(georeference == nil)
+                .help(georeference == nil
+                    ? "Only instrument approach charts are georeferenced by the FAA"
+                    : "Show on map")
+                .accessibilityIdentifier("plate.showOnMap")
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
                     nightMode.toggle()
                 } label: {
                     Image(systemName: nightMode ? "sun.max" : "moon")
@@ -42,9 +56,21 @@ struct PlateViewerView: View {
                 .help("Night mode")
             }
         }
+        .safeAreaInset(edge: .bottom) {
+            if documentURL != nil, georeference == nil {
+                Text("Not georeferenced — only instrument approach charts can overlay the map.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity)
+                    .background(.thinMaterial)
+            }
+        }
         .task(id: plate) {
             do {
-                documentURL = try await environment.plateStore.fetch(plate)
+                let url = try await environment.plateStore.fetch(plate)
+                documentURL = url
+                georeference = PlateGeoreference.parse(url: url)
             } catch {
                 loadError = true
             }

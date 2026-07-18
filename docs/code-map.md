@@ -34,6 +34,9 @@ Launch args seed deterministic state for `xcrun simctl` screenshots:
 | `-downloadsDemoSeed YES` / `-downloadsDemoOpen US-TX` | fake manifest + download states; deep-link a region detail |
 | `-downloadsDemoAutostart US-TX` | really download a region's every published kind (needs `-serverBaseURL`) |
 | `-mapDemoChart none` | deselect the chart layer (e.g. to see the offline basemap alone) |
+| `-mapDemoInspect KAUS` | open the non-modal map info panel on an airport |
+| `-mapDemoInspectAdvisories YES` | open the info panel with two synthetic advisories |
+| `-mapDemoPlate KAUS` | pin the airport's first approach plate to the map (downloads it; needs internet) |
 
 For live ADS-B behavior, run `swift run gdl90sim` (in `Packages/FlightBagCore`)
 alongside the app. Note the simulator persists `adsbEnabled`; if the receiver
@@ -61,6 +64,7 @@ touch GRDB or providers directly.
 - `DownloadService.swift` — background `URLSession` (`Me.FlightBag.downloads`): resume data, relaunch reattach via `taskDescription` = product id; AppDelegate in `FlightBagApp.swift` catches `handleEventsForBackgroundURLSession`
 - `ManifestClient.swift` — `ServerConfig` (UserDefaults `serverBaseURL`) + `/v1/manifest` fetch with offline JSON cache
 - `ZipExtractor.swift` — minimal zip reader (stored/deflate, no zip64) for per-state plate bundles
+- `PlateGeoreference.swift` — parses the geospatial viewport FAA embeds in IAP PDFs (`/VP` → BBox + GPTS/LPTS; registration points sit on an inset 0.1–0.9 ring, so corners come from an affine fit) + `PlateRasterizer` (BBox region → ≤2048px CGImage). APD/DP/STAR have no georef → nil → "Show on Map" disabled
 - `WeatherStore.swift` — actor; METAR/TAF fetch + cache (`StationWeather`)
 - `AdvisoryStore.swift` — fetches TFR/SIGMET/G-AIRMET via FBProviders
 - `AirspaceStore.swift` — loads airspace polygons for map viewport
@@ -72,7 +76,9 @@ touch GRDB or providers directly.
 
 ### Features (`Features/`)
 **Map** — the most complex feature; MapKit, not SwiftUI Map:
-- `MapHomeView.swift` (~365 ln) — SwiftUI host: layer pickers, advisory inspection sheets, search
+- `MapHomeView.swift` (~365 ln) — SwiftUI host: layer pickers, search, `MapInspection` state
+- `MapInfoPanel.swift` — non-modal info card over the map (airport detail / tapped advisories); bottom card on compact, floating side card on iPad — replaced the old blocking sheets so the map stays scrubbable
+- `PlateOverlay.swift` — `PlateOverlay` + `PlateOverlayRenderer`: a rasterized approach plate pinned to its geographic footprint (affine from 3 corners), opacity via the shared `overlayAlphas` plumbing; active plate lives on `AppEnvironment.activePlateOverlay`, opacity on `MapLayersState.plateOpacity`
 - `EFBMapView.swift` (~510 ln) — `UIViewRepresentable` wrapping `MKMapView`; `Coordinator` owns all delegate logic, annotations (airport/waypoint/ownship), overlay z-ordering, tap handling
 - `MapLayersState.swift` — `ChartKind` (VFR/IFR-low/IFR-high) + observable toggle state for all layers
 - `MBTilesOverlay.swift` — `MKTileOverlay` reading local MBTiles via GRDB

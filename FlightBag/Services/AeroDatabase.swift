@@ -146,6 +146,66 @@ final class AeroDatabase: Sendable {
         }
     }
 
+    /// Airport for the map's aeronautical layer, with an importance tier so
+    /// zoomed-out views can show only the airports a pilot would look for.
+    struct MapAirport: Sendable, Hashable {
+        let id: String
+        let icaoId: String?
+        let name: String
+        let latitude: Double
+        let longitude: Double
+        /// 0 = towered with a ≥6000′ runway, 1 = towered or ≥5000′, 2 = rest.
+        let tier: Int
+
+        var displayIdentifier: String { icaoId ?? id }
+    }
+
+    func mapAirportsNear(
+        latitude: Double,
+        longitude: Double,
+        spanDegrees: Double,
+        maxTier: Int,
+        limit: Int
+    ) async throws -> [MapAirport] {
+        try await dbQueue.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT id, icao_id, name, lat, lon,
+                    CASE
+                        WHEN twr AND longest >= 6000 THEN 0
+                        WHEN twr OR longest >= 5000 THEN 1
+                        ELSE 2
+                    END AS tier
+                FROM (
+                    SELECT a.id, a.icao_id, a.name, a.lat, a.lon,
+                        EXISTS(SELECT 1 FROM frequency f WHERE f.airport_id = a.id AND f.use = 'TWR') AS twr,
+                        COALESCE((SELECT MAX(length_ft) FROM runway rw WHERE rw.airport_id = a.id), 0) AS longest
+                    FROM airport_rtree r
+                    JOIN airport a ON a.rowid = r.id
+                    WHERE r.min_lat >= ? AND r.max_lat <= ? AND r.min_lon >= ? AND r.max_lon <= ?
+                      AND a.site_type = 'A'
+                )
+                WHERE tier <= ?
+                ORDER BY tier, (lat - ?) * (lat - ?) + (lon - ?) * (lon - ?)
+                LIMIT ?
+                """,
+                arguments: [
+                    latitude - spanDegrees, latitude + spanDegrees,
+                    longitude - spanDegrees, longitude + spanDegrees,
+                    maxTier,
+                    latitude, latitude, longitude, longitude,
+                    limit,
+                ]
+            ).map { row in
+                MapAirport(
+                    id: row["id"], icaoId: row["icao_id"], name: row["name"],
+                    latitude: row["lat"], longitude: row["lon"], tier: row["tier"]
+                )
+            }
+        }
+    }
+
     // MARK: Airport detail
 
     struct AirportDetail: Sendable {
