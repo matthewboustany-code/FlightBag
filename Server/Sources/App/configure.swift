@@ -19,6 +19,7 @@ public func configure(_ app: Application) async throws {
     // scheduled jobs once deployed): `swift run App ingest-nasr --cycle 2607`.
     app.asyncCommands.use(IngestNASRCommand(), as: "ingest-nasr")
     app.asyncCommands.use(IngestDTPPCommand(), as: "ingest-dtpp")
+    app.asyncCommands.use(IngestCIFPCommand(), as: "ingest-cifp")
     app.asyncCommands.use(IngestTilesCommand(), as: "ingest-tiles")
     app.asyncCommands.use(IngestBasemapCommand(), as: "ingest-basemap")
     app.asyncCommands.use(BundlePlatesCommand(), as: "bundle-plates")

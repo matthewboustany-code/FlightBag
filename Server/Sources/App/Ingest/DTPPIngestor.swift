@@ -37,6 +37,8 @@ struct DTPPIngestor {
         logger("d-TPP: \(records.count) charts")
 
         try await builder.dbQueue.write { db in
+            // Rerunning replaces plate data rather than duplicating it.
+            try db.execute(sql: "DELETE FROM plate")
             for record in records {
                 try db.execute(
                     sql: """

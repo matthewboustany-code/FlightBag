@@ -239,6 +239,7 @@ struct IngestAllCommand: AsyncCommand {
         try await NASRIngestor(workDirectory: workDir) { console.info($0) }.run(cycle: cycle, into: builder)
         try builder.buildIndexes()
         try await DTPPIngestor(workDirectory: workDir) { console.info($0) }.run(cycle: cycle, into: builder)
+        try await CIFPIngestor(workDirectory: workDir) { console.info($0) }.run(cycle: cycle, into: builder)
         try builder.vacuum()
         try publish(temp, to: final)
         console.success("db/aero.sqlite published")

@@ -15,6 +15,7 @@ struct EFBMapView: UIViewRepresentable {
     /// Same, for the FIS-B mosaic.
     var fisbRadarVersion: Int = 0
     var route: ActiveMapRoute?
+    var procedure: ActiveMapProcedure?
     var activePlate: PlateMetadata?
     @Binding var followOwnship: Bool
     @Binding var trackUp: Bool
@@ -94,6 +95,7 @@ struct EFBMapView: UIViewRepresentable {
         coordinator.syncAdvisories(on: map, layers: layers, store: environment.advisoryStore)
         coordinator.refreshAeronautical(on: map)
         coordinator.syncRoute(on: map, route: route)
+        coordinator.syncProcedure(on: map, procedure: procedure)
         coordinator.onPlateUnavailable = { [environment] in environment.activePlateOverlay = nil }
         coordinator.syncPlateOverlay(on: map, plate: activePlate, layers: layers)
         coordinator.syncOwnship(on: map, position: position, followOwnship: followOwnship, trackUp: trackUp)
@@ -143,6 +145,9 @@ struct EFBMapView: UIViewRepresentable {
         private var routePolyline: MKPolyline?
         private var routeKey: ActiveMapRoute?
         private var routeAnnotations: [RouteWaypointAnnotation] = []
+        private var procedurePolylines: [ProcedurePolyline] = []
+        private var procedureAnnotations: [RouteWaypointAnnotation] = []
+        private var procedureKey: ActiveMapProcedure?
         private var plateOverlay: PlateOverlay?
         private var plateKey: String?
         private var plateTask: Task<Void, Never>?
@@ -419,12 +424,50 @@ struct EFBMapView: UIViewRepresentable {
             routePolyline = polyline
             map.addOverlay(polyline, level: .aboveLabels)
 
-            routeAnnotations = route.points.map(RouteWaypointAnnotation.init)
+            routeAnnotations = route.points.map { RouteWaypointAnnotation(point: $0) }
             map.addAnnotations(routeAnnotations)
 
             if shouldZoom {
                 map.setVisibleMapRect(
                     polyline.boundingMapRect,
+                    edgePadding: UIEdgeInsets(top: 60, left: 60, bottom: 60, right: 60),
+                    animated: true
+                )
+            }
+        }
+
+        // MARK: Procedure (SID/STAR) overlay
+
+        /// Vector branches of the active procedure — one dashed polyline per
+        /// transition plus labeled fixes. Same delta pattern as syncRoute.
+        func syncProcedure(on map: MKMapView, procedure: ActiveMapProcedure?) {
+            guard procedure != procedureKey else { return }
+            let shouldZoom = procedureKey == nil || procedure?.label != procedureKey?.label
+            procedureKey = procedure
+            for polyline in procedurePolylines { map.removeOverlay(polyline) }
+            procedurePolylines.removeAll()
+            map.removeAnnotations(procedureAnnotations)
+            procedureAnnotations.removeAll()
+
+            guard let procedure else { return }
+            for branch in procedure.branches {
+                let coordinates = branch.points.map {
+                    CLLocationCoordinate2D(latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)
+                }
+                let polyline = ProcedurePolyline(coordinates: coordinates, count: coordinates.count)
+                procedurePolylines.append(polyline)
+                map.addOverlay(polyline, level: .aboveLabels)
+            }
+            procedureAnnotations = procedure.uniquePoints.map {
+                RouteWaypointAnnotation(point: $0, tint: .systemBlue)
+            }
+            map.addAnnotations(procedureAnnotations)
+
+            if shouldZoom, let union = procedurePolylines.map(\.boundingMapRect).reduce(nil, { (partial: MKMapRect?, rect) in
+                partial.map { $0.union(rect) } ?? rect
+            }) {
+                map.setVisibleMapRect(
+                    union,
                     edgePadding: UIEdgeInsets(top: 60, left: 60, bottom: 60, right: 60),
                     animated: true
                 )
@@ -449,14 +492,18 @@ struct EFBMapView: UIViewRepresentable {
                     if plate != nil { onPlateUnavailable() }
                     return
                 }
+                let database = aeroDatabase
                 plateTask = Task { [weak self, weak map] in
                     var built: PlateOverlayImage?
                     if let url = try? await store.fetch(plate) {
-                        built = await Task.detached(priority: .userInitiated) {
-                            guard let georef = PlateGeoreference.parse(url: url),
-                                  let image = PlateRasterizer.rasterize(url: url, georeference: georef) else { return nil }
-                            return PlateOverlayImage(image: image, corners: georef.corners)
-                        }.value
+                        // Resolver covers embedded (IAP) and runway-matched
+                        // (airport diagram) georeferencing, cached.
+                        if let georef = await PlateGeoreferenceResolver.resolve(plate: plate, url: url, database: database) {
+                            built = await Task.detached(priority: .userInitiated) {
+                                guard let image = PlateRasterizer.rasterize(url: url, georeference: georef) else { return nil }
+                                return PlateOverlayImage(image: image, corners: georef.corners)
+                            }.value
+                        }
                     }
                     guard let self, let map, !Task.isCancelled, self.plateKey == plate.id else { return }
                     guard let built else {
@@ -535,6 +582,17 @@ struct EFBMapView: UIViewRepresentable {
                     ? UIColor.systemGray.withAlphaComponent(0.8)
                     : UIColor.systemBlue.withAlphaComponent(0.55)
                 renderer.lineWidth = 1.5
+                return renderer
+            }
+            if let procedure = overlay as? ProcedurePolyline {
+                // Dashed blue: a procedure preview, distinct from the
+                // magenta planned-route line.
+                let renderer = MKPolylineRenderer(polyline: procedure)
+                renderer.strokeColor = .systemBlue
+                renderer.lineWidth = 3
+                renderer.lineDashPattern = [6, 6]
+                renderer.lineCap = .round
+                renderer.lineJoin = .round
                 return renderer
             }
             if let polyline = overlay as? MKPolyline {

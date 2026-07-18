@@ -6,16 +6,19 @@ import FBFlightPlan
 // MARK: - Route waypoint annotations
 
 /// A labeled point on the active route — the map shows every fix/navaid/
-/// airport in the route, not just the course line.
+/// airport in the route, not just the course line. Procedures reuse it with
+/// a blue tint.
 final class RouteWaypointAnnotation: NSObject, MKAnnotation {
     let point: ActiveMapRoute.Point
+    let tint: UIColor
     var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: point.coordinate.latitude, longitude: point.coordinate.longitude)
     }
     var title: String? { point.identifier }
 
-    init(point: ActiveMapRoute.Point) {
+    init(point: ActiveMapRoute.Point, tint: UIColor = .systemPink) {
         self.point = point
+        self.tint = tint
     }
 }
 
@@ -47,13 +50,13 @@ final class RouteWaypointAnnotationView: MKAnnotationView {
         symbolView.image = UIImage(
             systemName: isAirport ? "circle.circle.fill" : "diamond.fill",
             withConfiguration: config
-        )?.withTintColor(.systemPink, renderingMode: .alwaysOriginal)
+        )?.withTintColor(annotation.tint, renderingMode: .alwaysOriginal)
         symbolView.sizeToFit()
 
         label.attributedText = MapLabelStyle.halo(
             annotation.point.identifier,
             font: .systemFont(ofSize: 13, weight: .bold),
-            color: .systemPink
+            color: annotation.tint
         )
         label.sizeToFit()
 
@@ -63,6 +66,10 @@ final class RouteWaypointAnnotationView: MKAnnotationView {
         collisionMode = .rectangle
     }
 }
+
+/// Tag subclass so `rendererFor` can style SID/STAR branches (dashed blue)
+/// distinctly from the planned route.
+final class ProcedurePolyline: MKPolyline {}
 
 // MARK: - Editor panel
 

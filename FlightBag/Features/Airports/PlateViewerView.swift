@@ -43,7 +43,7 @@ struct PlateViewerView: View {
                 }
                 .disabled(georeference == nil)
                 .help(georeference == nil
-                    ? "Only instrument approach charts are georeferenced by the FAA"
+                    ? "This chart can't be georeferenced (approach charts and most airport diagrams can)"
                     : "Show on map")
                 .accessibilityIdentifier("plate.showOnMap")
             }
@@ -58,7 +58,7 @@ struct PlateViewerView: View {
         }
         .safeAreaInset(edge: .bottom) {
             if documentURL != nil, georeference == nil {
-                Text("Not georeferenced — only instrument approach charts can overlay the map.")
+                Text("Not georeferenced — approach charts and most airport diagrams can overlay the map.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .padding(.vertical, 4)
@@ -70,7 +70,9 @@ struct PlateViewerView: View {
             do {
                 let url = try await environment.plateStore.fetch(plate)
                 documentURL = url
-                georeference = PlateGeoreference.parse(url: url)
+                georeference = await PlateGeoreferenceResolver.resolve(
+                    plate: plate, url: url, database: environment.aeroDatabase
+                )
             } catch {
                 loadError = true
             }

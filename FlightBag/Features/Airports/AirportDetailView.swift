@@ -18,6 +18,7 @@ struct AirportDetailView: View {
                     runwaysSection(detail)
                     frequenciesSection(detail)
                     PlatesSection(plates: detail.plates)
+                    ProceduresSection(airport: detail.airport)
                     notamSection(detail)
                 }
             } else if loadFailed {

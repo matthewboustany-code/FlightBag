@@ -15,13 +15,10 @@ struct AeroDatabaseBuilder {
         try createSchema()
     }
 
-    /// Open an already-built database to append to it (e.g. d-TPP after NASR).
+    /// Open an already-built database to append to it (d-TPP, CIFP).
+    /// Each appending ingestor clears its own tables for rerun-safety.
     init(existingPath: String) throws {
         dbQueue = try DatabaseQueue(path: existingPath)
-        // Re-running d-TPP ingestion replaces plate data rather than duplicating it.
-        try dbQueue.write { db in
-            try db.execute(sql: "DELETE FROM plate")
-        }
     }
 
     private func createSchema() throws {
@@ -135,14 +132,35 @@ struct AeroDatabaseBuilder {
                     lon REAL
                 );
                 CREATE INDEX idx_airway_point ON airway_point(airway_id, location, seq);
+                CREATE TABLE procedure (
+                    id INTEGER PRIMARY KEY,
+                    airport_id TEXT NOT NULL,
+                    ident TEXT NOT NULL,
+                    kind TEXT NOT NULL
+                );
+                CREATE INDEX idx_procedure_airport ON procedure(airport_id);
+                CREATE TABLE procedure_leg (
+                    procedure_id INTEGER NOT NULL,
+                    transition_kind TEXT NOT NULL,
+                    transition_ident TEXT,
+                    seq INTEGER NOT NULL,
+                    fix_ident TEXT NOT NULL,
+                    lat REAL NOT NULL,
+                    lon REAL NOT NULL,
+                    path_term TEXT,
+                    alt_desc TEXT,
+                    alt1_ft INTEGER,
+                    speed_kt INTEGER
+                );
+                CREATE INDEX idx_procedure_leg ON procedure_leg(procedure_id, transition_kind, transition_ident, seq);
                 """)
         }
     }
 
     /// Bumped when the schema gains tables the app depends on, so the app can
     /// prefer a bundled seed over an installed database of the same cycle.
-    /// 2: airway/airway_point tables.
-    static let schemaVersion = 2
+    /// 2: airway/airway_point tables. 3: procedure/procedure_leg (CIFP).
+    static let schemaVersion = 3
 
     func setMeta(cycle: DataCycle) throws {
         try dbQueue.write { db in

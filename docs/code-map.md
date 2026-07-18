@@ -37,6 +37,8 @@ Launch args seed deterministic state for `xcrun simctl` screenshots:
 | `-mapDemoInspect KAUS` | open the non-modal map info panel on an airport |
 | `-mapDemoInspectAdvisories YES` | open the info panel with two synthetic advisories |
 | `-mapDemoPlate KAUS` | pin the airport's first approach plate to the map (downloads it; needs internet) |
+| `-mapDemoPlateKind apd` | with `-mapDemoPlate`: pin the airport diagram instead (runway-matched georef) |
+| `-mapDemoProcedure KAUS:AEROZ2` | draw a SID/STAR's branches from the CIFP tables |
 | `-mapDemoRoute YES` / `-mapDemoRouteEditor YES` | show the KAUS→KDAL demo route; also open the route editor panel |
 | `-mapDemoRuler YES` | show the two-finger ruler HUD at fixed points (touches can't be scripted) |
 | `-weatherShowDecoded YES` | start the airport weather section in Decoded mode |
@@ -67,7 +69,9 @@ touch GRDB or providers directly.
 - `DownloadService.swift` — background `URLSession` (`Me.FlightBag.downloads`): resume data, relaunch reattach via `taskDescription` = product id; AppDelegate in `FlightBagApp.swift` catches `handleEventsForBackgroundURLSession`
 - `ManifestClient.swift` — `ServerConfig` (UserDefaults `serverBaseURL`) + `/v1/manifest` fetch with offline JSON cache
 - `ZipExtractor.swift` — minimal zip reader (stored/deflate, no zip64) for per-state plate bundles
-- `PlateGeoreference.swift` — parses the geospatial viewport FAA embeds in IAP PDFs (`/VP` → BBox + GPTS/LPTS; registration points sit on an inset 0.1–0.9 ring, so corners come from an affine fit) + `PlateRasterizer` (BBox region → ≤2048px CGImage). APD/DP/STAR have no georef → nil → "Show on Map" disabled
+- `PlateGeoreference.swift` — parses the geospatial viewport FAA embeds in IAP PDFs (`/VP` → BBox + GPTS/LPTS; registration points sit on an inset 0.1–0.9 ring, so corners come from an affine fit) + `PlateRasterizer` (BBox region → ≤2048px CGImage)
+- `AirportDiagramGeoreference.swift` — georeferences APDs (which have NO embedded georef): CGPDFScanner harvests filled vector polygons → PCA oriented-box runway candidates (aspect ≥8, collinear merge) → matched to NASR `runway_end` coords by scale-free length/angle (parallel-runway permutations resolved by residual) → 4-DOF similarity fit; RMS ≤ 20 m gate, nil on any doubt. `matcherVersion` invalidates the resolver cache
+- `PlateGeoreferenceResolver.swift` — the one answer to "can this plate pin to the map": embedded parse first (IAPs), APD runway-matcher fallback, JSON cache incl. negative results (Application Support/FlightBag/plates/georef-cache.json). DPs/STARs stay nil → "Show on Map" disabled
 - `WeatherStore.swift` — actor; METAR/TAF fetch + cache (`StationWeather`)
 - `AdvisoryStore.swift` — fetches TFR/SIGMET/G-AIRMET via FBProviders
 - `AirspaceStore.swift` — loads airspace polygons for map viewport
@@ -82,7 +86,8 @@ touch GRDB or providers directly.
 - `MapHomeView.swift` (~365 ln) — SwiftUI host: layer pickers, search, `MapInspection` state
 - `MapInfoPanel.swift` — non-modal info card over the map (airport detail / tapped advisories); bottom card on compact, floating side card on iPad — replaced the old blocking sheets so the map stays scrubbable
 - `PlateOverlay.swift` — `PlateOverlay` + `PlateOverlayRenderer`: a rasterized approach plate pinned to its geographic footprint (affine from 3 corners), opacity via the shared `overlayAlphas` plumbing; active plate lives on `AppEnvironment.activePlateOverlay`, opacity on `MapLayersState.plateOpacity`
-- `RouteEditorPanel.swift` — `RouteWaypointAnnotation`/-`View` (magenta labeled markers for every point of the active route) + the non-modal route editor card (delete/reorder/add, edits write back to `AppEnvironment.activeMapRoute`; `ActiveMapRoute` carries identified points, airway intermediates tagged `via`)
+- `RouteEditorPanel.swift` — `RouteWaypointAnnotation`/-`View` (labeled markers, tintable: magenta route / blue procedure) + `ProcedurePolyline` tag class + the non-modal route editor card (delete/reorder/add, edits write back to `AppEnvironment.activeMapRoute`; `ActiveMapRoute` carries identified points, airway intermediates tagged `via`)
+- SID/STAR vector overlays: `ActiveMapProcedure` (AppEnvironment; branches = common + every transition, assembled from `AeroDatabase.procedureLegs`) → `Coordinator.syncProcedure` draws dashed-blue polylines + deduped fix markers; entry via `ProceduresSection` (Airports) or `-mapDemoProcedure`. Rasters are NOT georeferenced for SIDs/STARs (not to scale) — this is the deliberate alternative
 - `MapRuler.swift` — `TwoFingerHoldGestureRecognizer` (two fingers held ~0.35 s; loses to pinch if they move) + `RulerHUDView` (screen-space dashed line + distance/course readout via NavMath; zoom/rotate suspended while measuring)
 - `EFBMapView.swift` (~510 ln) — `UIViewRepresentable` wrapping `MKMapView`; `Coordinator` owns all delegate logic, annotations (airport/waypoint/ownship), overlay z-ordering, tap handling
 - `MapLayersState.swift` — `ChartKind` (VFR/IFR-low/IFR-high) + observable toggle state for all layers
@@ -130,6 +135,7 @@ package dir) — the XCUITest ban applies only to the app's UI tests.
 
 - `routes.swift` — `/v1/manifest` (serves `Public/artifacts/manifest.json`, empty fallback) and `/v1/airports/:id/weather` (cached METAR/TAF proxy); JSON wire format is ISO8601 (set in `configure.swift`, which also mounts `FileMiddleware` over `Public/` — range requests included, so background downloads resume)
 - `Commands/IngestCommands.swift` — CLI entry points: `ingest-nasr`, `ingest-dtpp`, `ingest-tiles` (`--set vfr|ifr-low|ifr-high`, `--chart`/`--panel`), `ingest-basemap`, `bundle-plates --region US-XX --db aero.sqlite`, `build-manifest --base-url`
+- `Ingest/ARINC424.swift` + `Ingest/CIFPIngestor.swift` — FAA CIFP (ARINC 424) → `procedure`/`procedure_leg` tables (schema v3): fixed-width PD/PE parsing (fixture-tested against real lines), fix index from EA/PC/PG/D/DB records, coordinates resolved at ingest. `ingest-cifp` command (`--input` for manual FAACIFP18); runs inside `ingest-all` after DTPP
 - `Commands/IngestAllCommand.swift` — `ingest-all`: the scheduled-job orchestrator. Picks the target cycle itself (HEAD-probes whether the FAA published the next one), no-ops via a `{cycle}/.complete` marker, skips artifacts that already exist (rerun = resume), runs db → tiles → basemap → plates → manifest, and rebuilds the manifest when the calendar rolls into a pre-built cycle. Scope comes from `FLIGHTBAG_*` env vars (see `Server/.env.example`); the db always builds, charts are opt-in
 - `Ingest/` — `NASRIngestor` (~380 ln, FAA NASR CSV → sqlite), `DTPPIngestor` (plates), `AeroDatabaseBuilder` (builds per-cycle `aero.sqlite`), `TilePipeline` (`Source`: sectional / enroute low+high / Natural Earth basemap → MBTiles; enroute editions are 56-day, get `.expires` sidecars and `resolveEditionCycle`), `PlateBundler` (per-state plate zips, `{airportId}/{pdfName}` layout matching PlateStore), `ManifestBuilder` (artifact tree → manifest: sha256 sidecar cache, next-cycle + carry-forward), `ChartCatalog` (regions + sectional→state fallback table), `RegionBounds` (MBTiles `bounds` ∩ state bboxes → `regionIds`), `CSVTable` (parsing helper)
 - Artifact layout: `Public/artifacts/{cycle}/{tiles|plates|basemap|db}/…` + `manifest.json` (gitignored; maps 1:1 to object-store keys later)

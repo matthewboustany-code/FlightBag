@@ -47,6 +47,51 @@ struct ActiveMapRoute: Hashable {
     }
 }
 
+/// A SID/STAR drawn on the map from CIFP geometry: the common route plus
+/// every transition, one branch each. Branches share junction fixes, so the
+/// drawn lines connect; the paper chart's "all transitions" view.
+struct ActiveMapProcedure: Hashable {
+    struct Branch: Hashable {
+        var label: String
+        var points: [ActiveMapRoute.Point]
+    }
+
+    /// e.g. "KAUS AEROZ2 (SID)".
+    var label: String
+    var branches: [Branch]
+
+    /// Every fix once, for annotations.
+    var uniquePoints: [ActiveMapRoute.Point] {
+        var seen = Set<String>()
+        return branches.flatMap(\.points).filter { seen.insert($0.identifier).inserted }
+    }
+
+    /// Assemble from `AeroDatabase.procedureLegs` rows (already ordered by
+    /// transition, then sequence).
+    init(airportDisplayId: String, ident: String, kind: String, legs: [AeroDatabase.ProcedureLegRow]) {
+        label = "\(airportDisplayId) \(ident) (\(kind.uppercased()))"
+        let grouped = Dictionary(grouping: legs) { "\($0.transitionKind)|\($0.transitionIdent ?? "")" }
+        branches = grouped
+            .sorted { $0.key < $1.key }
+            .map { _, groupLegs in
+                Branch(
+                    label: groupLegs[0].transitionIdent ?? "common",
+                    points: groupLegs
+                        .sorted { $0.seq < $1.seq }
+                        .map {
+                            ActiveMapRoute.Point(
+                                identifier: $0.fixIdent,
+                                coordinate: Coordinate(latitude: $0.latitude, longitude: $0.longitude),
+                                kind: "fix",
+                                airway: nil
+                            )
+                        }
+                )
+            }
+            .filter { $0.points.count >= 2 }
+    }
+}
+
 /// Dependency container injected at the app root. Features reach services
 /// through this — never through singletons — so previews and tests can swap
 /// implementations.
@@ -88,6 +133,9 @@ final class AppEnvironment {
     /// Approach plate pinned to the map; set from the plate viewer, cleared
     /// from the map (or automatically if the chart can't be loaded).
     var activePlateOverlay: PlateMetadata?
+    /// SID/STAR drawn as vector branches on the map — a read-only preview,
+    /// deliberately separate from the editable `activeMapRoute`.
+    var activeProcedure: ActiveMapProcedure?
     /// One-shot tab-switch request ("Show on map"); RootTabView consumes it.
     var requestedTab: AppTab?
 

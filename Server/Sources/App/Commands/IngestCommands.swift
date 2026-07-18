@@ -90,6 +90,54 @@ struct IngestDTPPCommand: AsyncCommand {
     }
 }
 
+struct IngestCIFPCommand: AsyncCommand {
+    struct Signature: CommandSignature {
+        @Option(name: "cycle", help: "AIRAC cycle id, e.g. 2607. Defaults to the current cycle.")
+        var cycle: String?
+
+        @Option(name: "workdir", help: "Directory for downloads and intermediate files. Defaults to .build/ingest")
+        var workdir: String?
+
+        @Option(name: "output", help: "Path of the aero.sqlite to add procedures to. Defaults to <workdir>/aero.sqlite")
+        var output: String?
+
+        @Option(name: "input", help: "Path to a manually downloaded FAACIFP18 (skips the FAA download)")
+        var input: String?
+
+        init() {}
+    }
+
+    var help: String {
+        "Download the FAA CIFP (ARINC 424) and add SID/STAR geometry to an existing aero.sqlite"
+    }
+
+    func run(using context: CommandContext, signature: Signature) async throws {
+        let cycle: DataCycle
+        if let id = signature.cycle {
+            guard let parsed = DataCycle(id: id) else {
+                throw Abort(.badRequest, reason: "\(id) is not a valid AIRAC cycle identifier")
+            }
+            cycle = parsed
+        } else {
+            cycle = DataCycle.current()
+        }
+        let workDir = URL(fileURLWithPath: signature.workdir ?? ".build/ingest", isDirectory: true)
+        try FileManager.default.createDirectory(at: workDir, withIntermediateDirectories: true)
+        let output = signature.output ?? workDir.appendingPathComponent("aero.sqlite").path
+        guard FileManager.default.fileExists(atPath: output) else {
+            throw Abort(.badRequest, reason: "\(output) does not exist — run ingest-nasr first")
+        }
+
+        let console = context.console
+        console.info("CIFP ingestion for cycle \(cycle.id) → \(output)")
+        let builder = try AeroDatabaseBuilder(existingPath: output)
+        let ingestor = CIFPIngestor(workDirectory: workDir) { console.info($0) }
+        try await ingestor.run(cycle: cycle, into: builder, input: signature.input)
+        try builder.vacuum()
+        console.success("SID/STAR procedures added to \(output)")
+    }
+}
+
 struct IngestTilesCommand: AsyncCommand {
     struct Signature: CommandSignature {
         @Option(name: "set", help: "Chart set: vfr (default), ifr-low, ifr-high")

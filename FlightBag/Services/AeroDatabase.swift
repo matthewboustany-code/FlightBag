@@ -206,6 +206,62 @@ final class AeroDatabase: Sendable {
         }
     }
 
+    // MARK: Procedures (SID/STAR, schema v3+)
+
+    struct ProcedureSummary: Sendable, Hashable {
+        let ident: String
+        /// "sid" | "star"
+        let kind: String
+    }
+
+    struct ProcedureLegRow: Sendable, Hashable {
+        let transitionKind: String
+        let transitionIdent: String?
+        let seq: Int
+        let fixIdent: String
+        let latitude: Double
+        let longitude: Double
+    }
+
+    /// CIFP keys procedures by the 4-char ICAO-style ident ("KAUS"), so
+    /// query by both the FAA id and the ICAO id.
+    func procedures(airportId: String, icaoId: String?) async throws -> [ProcedureSummary] {
+        guard schemaVersion >= 3 else { return [] }
+        return try await dbQueue.read { db in
+            try Row.fetchAll(
+                db,
+                sql: "SELECT DISTINCT ident, kind FROM procedure WHERE airport_id IN (?, ?) ORDER BY kind, ident",
+                arguments: [airportId, icaoId ?? airportId]
+            ).map { ProcedureSummary(ident: $0["ident"], kind: $0["kind"]) }
+        }
+    }
+
+    func procedureLegs(airportId: String, icaoId: String?, ident: String) async throws -> [ProcedureLegRow] {
+        guard schemaVersion >= 3 else { return [] }
+        return try await dbQueue.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT l.transition_kind, l.transition_ident, l.seq, l.fix_ident, l.lat, l.lon
+                FROM procedure p
+                JOIN procedure_leg l ON l.procedure_id = p.id
+                WHERE p.airport_id IN (?, ?) AND p.ident = ?
+                ORDER BY l.transition_kind, l.transition_ident, l.seq
+                """,
+                arguments: [airportId, icaoId ?? airportId, ident]
+            ).map {
+                ProcedureLegRow(
+                    transitionKind: $0["transition_kind"],
+                    transitionIdent: $0["transition_ident"],
+                    seq: $0["seq"],
+                    fixIdent: $0["fix_ident"],
+                    latitude: $0["lat"],
+                    longitude: $0["lon"]
+                )
+            }
+        }
+    }
+
     // MARK: Airport detail
 
     struct AirportDetail: Sendable {

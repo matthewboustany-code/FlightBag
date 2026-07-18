@@ -24,6 +24,7 @@ struct MapHomeView: View {
                 trafficVersion: environment.trafficStore.membershipVersion,
                 fisbRadarVersion: environment.fisbRadarStore.dataVersion,
                 route: environment.activeMapRoute,
+                procedure: environment.activeProcedure,
                 activePlate: environment.activePlateOverlay,
                 followOwnship: $followOwnship,
                 trackUp: $trackUp,
@@ -179,13 +180,34 @@ struct MapHomeView: View {
                 environment.activeMapRoute = ActiveMapRoute(label: "KAUS → KDAL", route: parsed)
                 if defaults.bool(forKey: "mapDemoRouteEditor") { showRouteEditor = true }
             }
+            // `-mapDemoProcedure KAUS:AEROZ2` draws a SID/STAR's branches.
+            if let raw = defaults.string(forKey: "mapDemoProcedure"),
+               let db = environment.aeroDatabase {
+                let parts = raw.split(separator: ":").map(String.init)
+                if parts.count == 2,
+                   let detail = try? await db.airportDetail(id: parts[0]),
+                   let summary = try? await db.procedures(airportId: detail.airport.id, icaoId: detail.airport.icaoId?.rawValue)
+                       .first(where: { $0.ident == parts[1] }),
+                   let legs = try? await db.procedureLegs(airportId: detail.airport.id, icaoId: detail.airport.icaoId?.rawValue, ident: summary.ident) {
+                    environment.activeProcedure = ActiveMapProcedure(
+                        airportDisplayId: detail.airport.displayIdentifier,
+                        ident: summary.ident,
+                        kind: summary.kind,
+                        legs: legs
+                    )
+                }
+            }
             // `-mapDemoPlate KAUS` pins the airport's first approach plate
-            // (downloads it if needed — the simulator has internet).
+            // (downloads it if needed — the simulator has internet);
+            // `-mapDemoPlateKind apd` picks the airport diagram instead.
             if let plateAirport = defaults.string(forKey: "mapDemoPlate"),
                let db = environment.aeroDatabase,
-               let detail = try? await db.airportDetail(id: plateAirport),
-               let approach = detail.plates.first(where: { $0.category == .approach }) {
-                environment.activePlateOverlay = approach
+               let detail = try? await db.airportDetail(id: plateAirport) {
+                let kind: PlateMetadata.Category =
+                    defaults.string(forKey: "mapDemoPlateKind") == "apd" ? .airportDiagram : .approach
+                if let plate = detail.plates.first(where: { $0.category == kind }) {
+                    environment.activePlateOverlay = plate
+                }
             }
             if layers.anyAdvisoryEnabled {
                 await environment.advisoryStore.refreshIfStale()
@@ -305,6 +327,16 @@ struct MapHomeView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("map.clearPlate")
+            }
+            if let procedure = environment.activeProcedure {
+                Button {
+                    environment.activeProcedure = nil
+                } label: {
+                    Label(procedure.label, systemImage: "xmark.circle.fill")
+                        .foregroundStyle(.blue)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("map.clearProcedure")
             }
             if let position = environment.positionSource.position {
                 Label(position.sourceName, systemImage: position.sourceName == "ADS-B"
