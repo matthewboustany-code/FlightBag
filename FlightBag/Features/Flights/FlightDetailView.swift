@@ -113,7 +113,7 @@ struct FlightDetailView: View {
         guard let parsedRoute else { return }
         environment.activeMapRoute = ActiveMapRoute(
             label: "\(flight.departure) → \(flight.destination)",
-            coordinates: parsedRoute.waypoints.map(\.coordinate)
+            route: parsedRoute
         )
         environment.requestedTab = .map
     }

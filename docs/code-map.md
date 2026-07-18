@@ -37,6 +37,9 @@ Launch args seed deterministic state for `xcrun simctl` screenshots:
 | `-mapDemoInspect KAUS` | open the non-modal map info panel on an airport |
 | `-mapDemoInspectAdvisories YES` | open the info panel with two synthetic advisories |
 | `-mapDemoPlate KAUS` | pin the airport's first approach plate to the map (downloads it; needs internet) |
+| `-mapDemoRoute YES` / `-mapDemoRouteEditor YES` | show the KAUS→KDAL demo route; also open the route editor panel |
+| `-mapDemoRuler YES` | show the two-finger ruler HUD at fixed points (touches can't be scripted) |
+| `-weatherShowDecoded YES` | start the airport weather section in Decoded mode |
 
 For live ADS-B behavior, run `swift run gdl90sim` (in `Packages/FlightBagCore`)
 alongside the app. Note the simulator persists `adsbEnabled`; if the receiver
@@ -79,6 +82,8 @@ touch GRDB or providers directly.
 - `MapHomeView.swift` (~365 ln) — SwiftUI host: layer pickers, search, `MapInspection` state
 - `MapInfoPanel.swift` — non-modal info card over the map (airport detail / tapped advisories); bottom card on compact, floating side card on iPad — replaced the old blocking sheets so the map stays scrubbable
 - `PlateOverlay.swift` — `PlateOverlay` + `PlateOverlayRenderer`: a rasterized approach plate pinned to its geographic footprint (affine from 3 corners), opacity via the shared `overlayAlphas` plumbing; active plate lives on `AppEnvironment.activePlateOverlay`, opacity on `MapLayersState.plateOpacity`
+- `RouteEditorPanel.swift` — `RouteWaypointAnnotation`/-`View` (magenta labeled markers for every point of the active route) + the non-modal route editor card (delete/reorder/add, edits write back to `AppEnvironment.activeMapRoute`; `ActiveMapRoute` carries identified points, airway intermediates tagged `via`)
+- `MapRuler.swift` — `TwoFingerHoldGestureRecognizer` (two fingers held ~0.35 s; loses to pinch if they move) + `RulerHUDView` (screen-space dashed line + distance/course readout via NavMath; zoom/rotate suspended while measuring)
 - `EFBMapView.swift` (~510 ln) — `UIViewRepresentable` wrapping `MKMapView`; `Coordinator` owns all delegate logic, annotations (airport/waypoint/ownship), overlay z-ordering, tap handling
 - `MapLayersState.swift` — `ChartKind` (VFR/IFR-low/IFR-high) + observable toggle state for all layers
 - `MBTilesOverlay.swift` — `MKTileOverlay` reading local MBTiles via GRDB
@@ -95,7 +100,7 @@ touch GRDB or providers directly.
 - `NavLogView.swift` — rendered navlog from FBFlightPlan's `NavLog`
 - `ClearanceEntryView.swift`, `AircraftListView.swift`, `DocumentsSection.swift` (doc scanner via VisionKit)
 
-**Airports** — `AirportsHomeView` (search) → `AirportDetailView` → `WeatherSection`, `PlatesSection`, `PlateViewerView` (PDF)
+**Airports** — `AirportsHomeView` (search) → `AirportDetailView` → `WeatherSection` (raw/decoded toggle backed by `WeatherDecoding.swift` — METAR from parsed fields, TAF tokenized group-by-group), `PlatesSection`, `PlateViewerView` (PDF)
 
 **Downloads** — `DownloadsHomeView.swift` (region rows, storage split, `FreshnessBadge`, `productFreshness` honoring 56-day IFR expirations) → `RegionListView.swift` (manifest-driven state picker) → `RegionDetailView.swift` (chart-type toggles, per-product progress/pause/resume, refcount-aware delete)
 

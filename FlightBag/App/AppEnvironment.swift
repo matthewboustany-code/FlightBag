@@ -1,14 +1,50 @@
 import Foundation
 import Observation
 import FBModels
+import FBFlightPlan
 import FBProviders
 import FBGDL90
 import FBFISB
 
 /// A planned route pushed onto the map from a flight's detail page.
+/// Carries identified points (not bare coordinates) so the map can label
+/// them and the route editor panel can add/remove/reorder.
 struct ActiveMapRoute: Hashable {
+    struct Point: Hashable, Identifiable {
+        let id = UUID()
+        var identifier: String
+        var coordinate: Coordinate
+        /// `ResolvedWaypoint.Kind` rawValue: airport/navaid/fix/latLon.
+        var kind: String
+        /// Airway this point was expanded from ("V17"), nil for explicit points.
+        var airway: String?
+    }
+
     var label: String
-    var coordinates: [Coordinate]
+    var points: [Point]
+
+    var coordinates: [Coordinate] { points.map(\.coordinate) }
+
+    init(label: String, points: [Point]) {
+        self.label = label
+        self.points = points
+    }
+
+    /// Flattens a parsed route, tagging airway intermediates with the
+    /// airway they came from.
+    init(label: String, route: ParsedRoute) {
+        self.label = label
+        points = route.elements.flatMap { element -> [Point] in
+            switch element {
+            case .waypoint(let wp):
+                return [Point(identifier: wp.identifier, coordinate: wp.coordinate, kind: wp.kind.rawValue, airway: nil)]
+            case .airway(let ident, let via):
+                return via.map { Point(identifier: $0.identifier, coordinate: $0.coordinate, kind: $0.kind.rawValue, airway: ident) }
+            case .direct, .unresolved:
+                return []
+            }
+        }
+    }
 }
 
 /// Dependency container injected at the app root. Features reach services

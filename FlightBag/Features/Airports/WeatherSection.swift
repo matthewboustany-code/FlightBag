@@ -10,6 +10,7 @@ struct WeatherSection: View {
     @State private var weather: WeatherStore.StationWeather?
     @State private var isStale = false
     @State private var isLoading = true
+    @AppStorage("weatherShowDecoded") private var showDecoded = false
 
     var body: some View {
         Section {
@@ -27,17 +28,48 @@ struct WeatherSection: View {
                         Spacer()
                         ageStamp
                     }
-                    Text(metar.raw)
-                        .font(.callout.monospaced())
-                        .textSelection(.enabled)
-                    decodedSummary(metar)
+                    if showDecoded {
+                        ForEach(WeatherDecoder.decode(metar), id: \.self) { line in
+                            Text(line)
+                                .font(.callout)
+                                .textSelection(.enabled)
+                        }
+                    } else {
+                        Text(metar.raw)
+                            .font(.callout.monospaced())
+                            .textSelection(.enabled)
+                        decodedSummary(metar)
+                    }
+                    Picker("Format", selection: $showDecoded) {
+                        Text("Raw").tag(false)
+                        Text("Decoded").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                    .frame(maxWidth: 200)
+                    .accessibilityIdentifier("weather.format")
                 }
                 .padding(.vertical, 2)
                 if let taf = weather?.taf {
                     DisclosureGroup("TAF") {
-                        Text(taf.raw)
-                            .font(.callout.monospaced())
-                            .textSelection(.enabled)
+                        if showDecoded {
+                            ForEach(WeatherDecoder.decodeTAF(taf.raw), id: \.header) { group in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(group.header)
+                                        .font(.callout.weight(.semibold))
+                                    ForEach(group.conditions, id: \.self) { condition in
+                                        Text(condition)
+                                            .font(.callout)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                                .padding(.vertical, 3)
+                            }
+                        } else {
+                            Text(taf.raw)
+                                .font(.callout.monospaced())
+                                .textSelection(.enabled)
+                        }
                     }
                 }
             } else {

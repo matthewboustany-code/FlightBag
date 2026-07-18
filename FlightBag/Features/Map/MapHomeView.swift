@@ -1,6 +1,7 @@
 import SwiftUI
 import MapKit
 import FBModels
+import FBFlightPlan
 import FBGDL90
 import FBFISB
 
@@ -13,6 +14,7 @@ struct MapHomeView: View {
     @State private var trackUp = false
     @State private var showLayersPanel = false
     @State private var inspection: MapInspection?
+    @State private var showRouteEditor = false
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -25,8 +27,14 @@ struct MapHomeView: View {
                 activePlate: environment.activePlateOverlay,
                 followOwnship: $followOwnship,
                 trackUp: $trackUp,
-                onSelectAirport: { inspection = .airport(id: $0) },
-                onInspectAdvisories: { inspection = .advisories(InspectedAdvisories(advisories: $0)) }
+                onSelectAirport: {
+                    showRouteEditor = false
+                    inspection = .airport(id: $0)
+                },
+                onInspectAdvisories: {
+                    showRouteEditor = false
+                    inspection = .advisories(InspectedAdvisories(advisories: $0))
+                }
             )
             .ignoresSafeArea(edges: .bottom)
 
@@ -57,6 +65,18 @@ struct MapHomeView: View {
                 }
                 .accessibilityIdentifier("map.trackup")
                 .help("Track up / north up")
+
+                if environment.activeMapRoute != nil {
+                    mapButton(
+                        systemImage: "point.topleft.down.to.point.bottomright.curvepath",
+                        active: showRouteEditor
+                    ) {
+                        showRouteEditor.toggle()
+                        if showRouteEditor { inspection = nil }
+                    }
+                    .accessibilityIdentifier("map.routeEditor")
+                    .help("Edit route")
+                }
             }
             .padding(.trailing, 12)
             .padding(.top, 8)
@@ -78,9 +98,19 @@ struct MapHomeView: View {
                     .padding(.horizontal, sizeClass == .compact ? 6 : 0)
                     .padding(.leading, sizeClass == .compact ? 0 : 12)
                     .transition(.move(edge: sizeClass == .compact ? .bottom : .leading).combined(with: .opacity))
+            } else if showRouteEditor, environment.activeMapRoute != nil {
+                RouteEditorPanel { showRouteEditor = false }
+                    .frame(maxWidth: sizeClass == .compact ? .infinity : 380)
+                    .containerRelativeFrame(.vertical) { length, _ in
+                        length * (sizeClass == .compact ? 0.42 : 0.7)
+                    }
+                    .padding(.horizontal, sizeClass == .compact ? 6 : 0)
+                    .padding(.leading, sizeClass == .compact ? 0 : 12)
+                    .transition(.move(edge: sizeClass == .compact ? .bottom : .leading).combined(with: .opacity))
             }
         }
         .animation(.snappy, value: inspection)
+        .animation(.snappy, value: showRouteEditor)
         .task {
             // Screenshot automation skips the location prompt, which would
             // otherwise sit modally over the map.
@@ -140,6 +170,14 @@ struct MapHomeView: View {
             if defaults.bool(forKey: "adsbDemoSeed") {
                 seedDemoTraffic()
                 seedDemoRadar()
+            }
+            // `-mapDemoRoute YES` shows the standard demo route;
+            // `-mapDemoRouteEditor YES` also opens the editor panel.
+            if defaults.bool(forKey: "mapDemoRoute"),
+               let db = environment.aeroDatabase,
+               let parsed = try? await RouteParser(resolver: db).parse("KAUS CWK V17 ACT KDAL") {
+                environment.activeMapRoute = ActiveMapRoute(label: "KAUS → KDAL", route: parsed)
+                if defaults.bool(forKey: "mapDemoRouteEditor") { showRouteEditor = true }
             }
             // `-mapDemoPlate KAUS` pins the airport's first approach plate
             // (downloads it if needed — the simulator has internet).

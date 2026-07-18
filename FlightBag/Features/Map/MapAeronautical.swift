@@ -81,7 +81,7 @@ final class WaypointAnnotationView: MKAnnotationView {
         } else {
             isNavaid = false
         }
-        let config = UIImage.SymbolConfiguration(pointSize: isNavaid ? 11 : 8, weight: .bold)
+        let config = UIImage.SymbolConfiguration(pointSize: isNavaid ? 13 : 10, weight: .bold)
         symbolView.image = UIImage(
             systemName: isNavaid ? "hexagon" : "triangle",
             withConfiguration: config
@@ -92,7 +92,7 @@ final class WaypointAnnotationView: MKAnnotationView {
         // and dark-mode .label would turn white-on-white.
         label.attributedText = MapLabelStyle.halo(
             annotation.waypoint.identifier,
-            font: .monospacedSystemFont(ofSize: 10, weight: .semibold),
+            font: .monospacedSystemFont(ofSize: 12, weight: .semibold),
             color: UIColor(white: 0.15, alpha: 1)
         )
         label.sizeToFit()

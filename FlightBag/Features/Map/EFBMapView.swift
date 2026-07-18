@@ -44,6 +44,7 @@ struct EFBMapView: UIViewRepresentable {
         map.register(AirportAnnotationView.self, forAnnotationViewWithReuseIdentifier: AirportAnnotationView.reuseId)
         map.register(OwnshipAnnotationView.self, forAnnotationViewWithReuseIdentifier: OwnshipAnnotationView.reuseId)
         map.register(WaypointAnnotationView.self, forAnnotationViewWithReuseIdentifier: WaypointAnnotationView.reuseId)
+        map.register(RouteWaypointAnnotationView.self, forAnnotationViewWithReuseIdentifier: RouteWaypointAnnotationView.reuseId)
         map.register(TrafficAnnotationView.self, forAnnotationViewWithReuseIdentifier: TrafficAnnotationView.reuseId)
         context.coordinator.map = map
         context.coordinator.aeroDatabase = environment.aeroDatabase
@@ -54,6 +55,31 @@ struct EFBMapView: UIViewRepresentable {
         tap.cancelsTouchesInView = false
         tap.delegate = context.coordinator
         map.addGestureRecognizer(tap)
+
+        // Two-finger hold = measuring ruler (pinch wins if the fingers move
+        // right away).
+        let ruler = TwoFingerHoldGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleRuler(_:)))
+        ruler.cancelsTouchesInView = false
+        ruler.delegate = context.coordinator
+        map.addGestureRecognizer(ruler)
+
+        let hud = RulerHUDView(frame: map.bounds)
+        hud.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        map.addSubview(hud)
+        context.coordinator.rulerHUD = hud
+
+        // `-mapDemoRuler YES`: show the ruler at fixed screen points, since
+        // screenshot automation can't synthesize two-finger touches.
+        if UserDefaults.standard.bool(forKey: "mapDemoRuler") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak map, weak hud] in
+                guard let map, let hud else { return }
+                hud.update(
+                    from: CGPoint(x: map.bounds.width * 0.3, y: map.bounds.height * 0.62),
+                    to: CGPoint(x: map.bounds.width * 0.72, y: map.bounds.height * 0.35),
+                    on: map
+                )
+            }
+        }
         return map
     }
 
@@ -116,6 +142,7 @@ struct EFBMapView: UIViewRepresentable {
         private var aeroTask: Task<Void, Never>?
         private var routePolyline: MKPolyline?
         private var routeKey: ActiveMapRoute?
+        private var routeAnnotations: [RouteWaypointAnnotation] = []
         private var plateOverlay: PlateOverlay?
         private var plateKey: String?
         private var plateTask: Task<Void, Never>?
@@ -346,27 +373,62 @@ struct EFBMapView: UIViewRepresentable {
             true
         }
 
+        // MARK: Ruler
+
+        var rulerHUD: RulerHUDView?
+
+        @objc func handleRuler(_ gesture: TwoFingerHoldGestureRecognizer) {
+            guard let map, let hud = rulerHUD else { return }
+            switch gesture.state {
+            case .began, .changed:
+                let points = gesture.touchPoints
+                guard points.count == 2 else { return }
+                if gesture.state == .began {
+                    // The fingers now belong to the ruler, not the camera.
+                    map.isZoomEnabled = false
+                    map.isRotateEnabled = false
+                }
+                hud.update(from: points[0], to: points[1], on: map)
+            default:
+                map.isZoomEnabled = true
+                map.isRotateEnabled = true
+                hud.hide()
+            }
+        }
+
         // MARK: Route
 
         func syncRoute(on map: MKMapView, route: ActiveMapRoute?) {
             guard route != routeKey else { return }
+            // Re-zoom only when a route arrives or is replaced, not on every
+            // editor tweak.
+            let shouldZoom = routeKey == nil || route?.label != routeKey?.label
             routeKey = route
             if let existing = routePolyline {
                 map.removeOverlay(existing)
                 routePolyline = nil
             }
-            guard let route, route.coordinates.count >= 2 else { return }
+            map.removeAnnotations(routeAnnotations)
+            routeAnnotations.removeAll()
+
+            guard let route, route.points.count >= 2 else { return }
             let points = route.coordinates.map {
                 CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude)
             }
             let polyline = MKPolyline(coordinates: points, count: points.count)
             routePolyline = polyline
             map.addOverlay(polyline, level: .aboveLabels)
-            map.setVisibleMapRect(
-                polyline.boundingMapRect,
-                edgePadding: UIEdgeInsets(top: 60, left: 60, bottom: 60, right: 60),
-                animated: true
-            )
+
+            routeAnnotations = route.points.map(RouteWaypointAnnotation.init)
+            map.addAnnotations(routeAnnotations)
+
+            if shouldZoom {
+                map.setVisibleMapRect(
+                    polyline.boundingMapRect,
+                    edgePadding: UIEdgeInsets(top: 60, left: 60, bottom: 60, right: 60),
+                    animated: true
+                )
+            }
         }
 
         // MARK: Plate overlay
@@ -630,6 +692,9 @@ struct EFBMapView: UIViewRepresentable {
                 if annotation is WaypointAnnotation {
                     return mapView.dequeueReusableAnnotationView(withIdentifier: WaypointAnnotationView.reuseId, for: annotation)
                 }
+                if annotation is RouteWaypointAnnotation {
+                    return mapView.dequeueReusableAnnotationView(withIdentifier: RouteWaypointAnnotationView.reuseId, for: annotation)
+                }
                 if annotation is TrafficAnnotation {
                     return mapView.dequeueReusableAnnotationView(withIdentifier: TrafficAnnotationView.reuseId, for: annotation)
                 }
@@ -639,9 +704,19 @@ struct EFBMapView: UIViewRepresentable {
 
         nonisolated func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
             MainActor.assumeIsolated {
-                guard let annotation = view.annotation as? AirportAnnotation else { return }
-                mapView.deselectAnnotation(annotation, animated: false)
-                onSelectAirport(annotation.airportId)
+                switch view.annotation {
+                case let annotation as AirportAnnotation:
+                    mapView.deselectAnnotation(annotation, animated: false)
+                    onSelectAirport(annotation.airportId)
+                case let annotation as RouteWaypointAnnotation where annotation.point.kind == "airport":
+                    // Route markers outrank the regular airport annotations in
+                    // collision, so a routed airport is tapped through its
+                    // route marker.
+                    mapView.deselectAnnotation(annotation, animated: false)
+                    onSelectAirport(annotation.point.identifier)
+                default:
+                    break
+                }
             }
         }
     }
@@ -689,7 +764,7 @@ final class AirportAnnotationView: MKAnnotationView {
 
     private func configure() {
         let tier = (annotation as? AirportAnnotation)?.tier ?? 2
-        let pointSize: CGFloat = tier == 0 ? 16 : tier == 1 ? 13 : 11
+        let pointSize: CGFloat = tier == 0 ? 18 : tier == 1 ? 15 : 13
         let config = UIImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold)
         symbolView.image = UIImage(
             systemName: tier == 0 ? "circle.circle.fill" : "circle.circle",
@@ -699,7 +774,7 @@ final class AirportAnnotationView: MKAnnotationView {
 
         label.attributedText = MapLabelStyle.halo(
             (annotation as? AirportAnnotation)?.airportId ?? "",
-            font: .systemFont(ofSize: 10, weight: .bold),
+            font: .systemFont(ofSize: 13, weight: .bold),
             color: .systemIndigo
         )
         label.sizeToFit()

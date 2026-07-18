@@ -25,7 +25,7 @@ enum AdvisoryCategory: String, CaseIterable, Identifiable {
     var strokeColor: UIColor {
         switch self {
         case .tfr: .systemRed
-        case .sigmet: .systemOrange
+        case .sigmet: .systemRed
         case .airmetSierra: .systemPurple
         case .airmetTango: .systemBrown
         case .airmetZulu: .systemTeal
