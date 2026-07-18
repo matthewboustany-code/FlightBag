@@ -232,6 +232,83 @@ import FBModels
     }
 }
 
+/// Real current-cycle FAA airport diagrams (d-TPP 2607). The synthetic
+/// fixtures above draw runways as clean 4-vertex quads; real diagrams draw
+/// them as single filled polygons with 14–45 vertices (displaced
+/// thresholds, notches), which a former vertex cap silently dropped —
+/// every real APD failed to georeference while all synthetic tests passed.
+/// Runway truth comes from NASR (Server artifacts aero.sqlite, cycle 2607).
+@Suite struct AirportDiagramRealFixtureTests {
+    struct RealDiagram: Sendable {
+        let fixture: String
+        let runways: [Runway]
+    }
+
+    private static func runway(_ designator: String, width: Int, _ endA: (String, Double, Double), _ endB: (String, Double, Double)) -> Runway {
+        Runway(designator: designator, widthFeet: width, ends: [
+            RunwayEnd(designator: endA.0, coordinate: Coordinate(latitude: endA.1, longitude: endA.2)),
+            RunwayEnd(designator: endB.0, coordinate: Coordinate(latitude: endB.1, longitude: endB.2)),
+        ])
+    }
+
+    static let diagrams: [RealDiagram] = [
+        // KAUS 00556AD: two long parallels + helipads (filtered out).
+        RealDiagram(fixture: "KAUS-APD-2607", runways: [
+            runway("18L/36R", width: 150, ("18L", 30.20383005, -97.65789105), ("36R", 30.17909102, -97.65724333)),
+            runway("18R/36L", width: 150, ("18R", 30.21361613, -97.67936477), ("36L", 30.17994322, -97.67847469)),
+            Runway(designator: "H1", widthFeet: 60, ends: [
+                RunwayEnd(designator: "H1", coordinate: Coordinate(latitude: 30.185475, longitude: -97.66100555)),
+            ]),
+        ]),
+        // KSEA 00582AD: three parallels of similar-but-distinct length —
+        // regression coverage for greedy misassignment (2594m drawn runway
+        // also within 10% of the 2876m runway).
+        RealDiagram(fixture: "KSEA-APD-2607", runways: [
+            runway("16C/34C", width: 150, ("16C", 47.46380986, -122.31098375), ("34C", 47.43797127, -122.31120983)),
+            runway("16L/34R", width: 150, ("16L", 47.46379522, -122.30775022), ("34R", 47.43117227, -122.30803825)),
+            runway("16R/34L", width: 150, ("16R", 47.46383636, -122.31785683), ("34L", 47.4405338, -122.31805805)),
+        ]),
+        // KNIP 00209AD: DoD-drawn diagram; Rwy 10/28 is one 24-vertex fill.
+        RealDiagram(fixture: "KNIP-APD-2607", runways: [
+            runway("10/28", width: 200, ("10", 30.23158888, -81.69293611), ("28", 30.23173333, -81.66443055)),
+            runway("14/32", width: 200, ("14", 30.24256666, -81.67883416), ("32", 30.23100833, -81.66537222)),
+        ]),
+        // KNUW 00451AD: crossing runways drawn as 14- and 21-vertex fills.
+        RealDiagram(fixture: "KNUW-APD-2607", runways: [
+            runway("07/25", width: 200, ("07", 48.35130541, -122.67288038), ("25", 48.35246413, -122.64003061)),
+            runway("14/32", width: 200, ("14", 48.36170344, -122.66250877), ("32", 48.34188527, -122.64841891)),
+        ]),
+    ]
+
+    @Test(arguments: diagrams) func georeferencesRealDiagram(_ diagram: RealDiagram) throws {
+        let url = try #require(Bundle(for: BundleToken.self).url(forResource: diagram.fixture, withExtension: "pdf"))
+
+        // Stage-level: the fit itself must be multi-runway and tight.
+        let known = AirportDiagramGeoreference.knownRunways(from: diagram.runways)
+        let document = try #require(CGPDFDocument(url as CFURL))
+        let page = try #require(document.page(at: 1))
+        let polygons = AirportDiagramGeoreference.filledPolygons(of: page)
+        let candidates = AirportDiagramGeoreference.candidateSegments(from: polygons)
+        let fit = try #require(AirportDiagramGeoreference.matchAndFit(candidates: candidates, known: known.runways))
+        #expect(fit.matchedCount >= 2)
+        #expect(fit.rmsMeters <= 20)
+
+        // End-to-end: match() accepts, and the geographic corner quad
+        // contains every surveyed runway end.
+        let georef = try #require(AirportDiagramGeoreference.match(url: url, runways: diagram.runways))
+        let latitudes = georef.corners.map(\.latitude)
+        let longitudes = georef.corners.map(\.longitude)
+        for end in diagram.runways.flatMap(\.ends) {
+            guard let coordinate = end.coordinate else { continue }
+            #expect(coordinate.latitude > latitudes.min()! && coordinate.latitude < latitudes.max()!)
+            #expect(coordinate.longitude > longitudes.min()! && coordinate.longitude < longitudes.max()!)
+        }
+    }
+}
+
+/// Anchor for locating the test bundle from struct-based suites.
+private final class BundleToken {}
+
 private extension SIMD2<Double> {
     var lengthMeters: Double { (x * x + y * y).squareRoot() }
 }

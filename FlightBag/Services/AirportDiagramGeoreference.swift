@@ -14,7 +14,7 @@ import FBModels
 enum AirportDiagramGeoreference {
     /// Bump to invalidate PlateGeoreferenceResolver's cached results after
     /// algorithm changes.
-    static let matcherVersion = 1
+    static let matcherVersion = 2
 
     // MARK: Entry point
 
@@ -246,7 +246,11 @@ enum AirportDiagramGeoreference {
 
         func fill() {
             closeSubpath()
-            filledPolygons.append(contentsOf: subpaths.filter { (3...12).contains($0.count) })
+            // No vertex cap: real diagrams draw runways as single polygons
+            // with displaced thresholds and notches (14–45 vertices seen on
+            // current-cycle APDs); the aspect/length filters downstream
+            // reject non-runway shapes.
+            filledPolygons.append(contentsOf: subpaths)
             subpaths = []
         }
 
@@ -390,10 +394,18 @@ enum AirportDiagramGeoreference {
             var remainingRunways = known.filter { $0.designator != anchorRunway.designator }
             for candidate in candidates where candidate.a != anchor.a || candidate.b != anchor.b {
                 let candidateRelativeAngle = halfTurnDifference(candidate.axisAngle, anchor.axisAngle)
-                guard let index = remainingRunways.firstIndex(where: { runway in
-                    abs(Double(candidate.length) * scale - runway.length) <= runway.length * 0.10
-                        && abs(halfTurnDifference(runway.axisAngle, anchorRunway.axisAngle) - candidateRelativeAngle) < 3 * .pi / 180
-                }) else { continue }
+                let scaledLength = Double(candidate.length) * scale
+                // Best length match, not first-within-tolerance: parallel
+                // runways of similar-but-distinct length (e.g. KSEA's 2594m
+                // and 2876m) can both pass the 10% gate.
+                let index = remainingRunways.indices
+                    .filter { index in
+                        let runway = remainingRunways[index]
+                        return abs(scaledLength - runway.length) <= runway.length * 0.10
+                            && abs(halfTurnDifference(runway.axisAngle, anchorRunway.axisAngle) - candidateRelativeAngle) < 3 * .pi / 180
+                    }
+                    .min { abs(scaledLength - remainingRunways[$0].length) < abs(scaledLength - remainingRunways[$1].length) }
+                guard let index else { continue }
                 pairs.append((candidate, remainingRunways[index]))
                 remainingRunways.remove(at: index)
             }
