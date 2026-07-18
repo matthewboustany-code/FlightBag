@@ -3,7 +3,7 @@
 File-level guide for navigating the codebase without reading everything.
 Companion to [architecture.md](architecture.md), which records the *why*;
 this records the *where*. Regenerate when the layout shifts (line counts
-are approximate as of 2026-07-17; ~16,100 lines of Swift total).
+are approximate as of 2026-07-18; ~18,200 lines of Swift total).
 
 ## Top level
 

@@ -55,7 +55,7 @@ the Linux build; `Sources/App/Ingest/*` already carries the
    docker compose --profile ingest run --rm ingest
    ```
 
-   NASR + d-TPP (the airport database) always run; charts follow your scope.
+   NASR + d-TPP + CIFP (the airport/procedure database) always run; charts follow your scope.
    A failure mid-run is fine — rerun and it resumes, skipping every artifact
    that already made it into the tree.
 
@@ -91,7 +91,7 @@ a push on failure.
 
 What a scheduled run does, in order: pick target cycle (next if published,
 else current; instant no-op via the cycle's `.complete` marker when done
-already) → NASR + d-TPP database → sectionals / IFR panels (IFR editions are
+already) → NASR + d-TPP + CIFP database → sectionals / IFR panels (IFR editions are
 56-day and publish under the cycle they belong to, with `.expires` sidecars)
 → basemap per `FLIGHTBAG_BASEMAP` policy → per-state plate bundles → rebuild
 `manifest.json`. When the calendar rolls into a cycle that was pre-built, the
