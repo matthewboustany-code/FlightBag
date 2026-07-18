@@ -3,7 +3,7 @@
 File-level guide for navigating the codebase without reading everything.
 Companion to [architecture.md](architecture.md), which records the *why*;
 this records the *where*. Regenerate when the layout shifts (line counts
-are approximate as of 2026-07-18; ~18,200 lines of Swift total).
+are approximate as of 2026-07-18; ~18,700 lines of Swift total).
 
 ## Top level
 
@@ -71,7 +71,8 @@ touch GRDB or providers directly.
 - `ZipExtractor.swift` — minimal zip reader (stored/deflate, no zip64) for per-state plate bundles
 - `PlateGeoreference.swift` — parses the geospatial viewport FAA embeds in IAP PDFs (`/VP` → BBox + GPTS/LPTS; registration points sit on an inset 0.1–0.9 ring, so corners come from an affine fit) + `PlateRasterizer` (BBox region → ≤2048px CGImage)
 - `AirportDiagramGeoreference.swift` — georeferences APDs (which have NO embedded georef): CGPDFScanner harvests filled vector polygons → PCA oriented-box runway candidates (aspect ≥8, collinear merge) → matched to NASR `runway_end` coords by scale-free length/angle (parallel-runway permutations resolved by residual) → 4-DOF similarity fit; RMS ≤ 20 m gate, nil on any doubt. `matcherVersion` invalidates the resolver cache
-- `PlateGeoreferenceResolver.swift` — the one answer to "can this plate pin to the map": embedded parse first (IAPs), APD runway-matcher fallback, JSON cache incl. negative results (Application Support/FlightBag/plates/georef-cache.json). DPs/STARs stay nil → "Show on Map" disabled
+- `ApproachFixGeoreference.swift` — georeferences military (DoD) IAPs, which also lack embedded georef: detects planview RNAV waypoint stars (spike-ring polygon signature; DoD text is unextractable so it's geometry-only) → north-up-constrained RANSAC similarity registration against NASR fixes/navaids/runway thresholds (unknown correspondence). Gates: ≥5 inliers, RMS ≤ 1 pt·scale, |rot| ≤ 1.5°, 40–500 m/pt; TAA/MSA decorative stars fall out as outliers; TACAN/ILS plates (no stars) → nil. ~1 s once per plate, then cached
+- `PlateGeoreferenceResolver.swift` — the one answer to "can this plate pin to the map": embedded parse first (IAPs), APD runway-matcher fallback, military-IAP star-registration fallback, JSON cache incl. negative results (Application Support/FlightBag/plates/georef-cache.json). DPs/STARs stay nil → "Show on Map" disabled
 - `WeatherStore.swift` — actor; METAR/TAF fetch + cache (`StationWeather`)
 - `AdvisoryStore.swift` — fetches TFR/SIGMET/G-AIRMET via FBProviders
 - `AirspaceStore.swift` — loads airspace polygons for map viewport

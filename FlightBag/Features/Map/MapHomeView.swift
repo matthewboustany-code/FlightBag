@@ -199,13 +199,19 @@ struct MapHomeView: View {
             }
             // `-mapDemoPlate KAUS` pins the airport's first approach plate
             // (downloads it if needed — the simulator has internet);
-            // `-mapDemoPlateKind apd` picks the airport diagram instead.
+            // `-mapDemoPlateKind apd` picks the airport diagram instead;
+            // `-mapDemoPlateChart "RNAV (GPS) Z RWY 28"` narrows by chart
+            // name substring.
             if let plateAirport = defaults.string(forKey: "mapDemoPlate"),
                let db = environment.aeroDatabase,
                let detail = try? await db.airportDetail(id: plateAirport) {
                 let kind: PlateMetadata.Category =
                     defaults.string(forKey: "mapDemoPlateKind") == "apd" ? .airportDiagram : .approach
-                if let plate = detail.plates.first(where: { $0.category == kind }) {
+                let chartFilter = defaults.string(forKey: "mapDemoPlateChart")?.uppercased()
+                if let plate = detail.plates.first(where: { plate in
+                    plate.category == kind
+                        && (chartFilter.map { plate.chartName.uppercased().contains($0) } ?? true)
+                }) {
                     environment.activePlateOverlay = plate
                 }
             }

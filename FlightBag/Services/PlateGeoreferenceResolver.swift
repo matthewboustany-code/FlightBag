@@ -5,29 +5,82 @@ import FBModels
 
 /// The one place that answers "can this plate be pinned to the map, and
 /// where?". IAPs use their embedded georeferencing; airport diagrams fall
-/// back to runway matching against NASR (AirportDiagramGeoreference), with
-/// results — including failures — cached so the PDF scan runs once per
-/// chart per cycle.
+/// back to runway matching against NASR (AirportDiagramGeoreference);
+/// military IAPs — DoD charts carry no embedded georef — fall back to
+/// registering planview RNAV stars against surveyed fixes
+/// (ApproachFixGeoreference). Results — including failures — are cached so
+/// the PDF scan runs once per chart per cycle.
 enum PlateGeoreferenceResolver {
     static func resolve(plate: PlateMetadata, url: URL, database: AeroDatabase?) async -> PlateGeoreference? {
-        // Embedded georef first: covers IAPs, and any chart type the FAA
-        // starts georeferencing in a future cycle.
+        // Embedded georef first: covers civil IAPs, and any chart type the
+        // FAA starts georeferencing in a future cycle.
         if let embedded = await parseDetached(url: url) {
             return embedded
         }
-        guard plate.category == .airportDiagram, let database else { return nil }
+        guard let database else { return nil }
 
-        let key = cacheKey(for: plate)
-        if let cached = Cache.shared.lookup(key) {
-            return cached.georeference
+        switch plate.category {
+        case .airportDiagram:
+            let key = cacheKey(for: plate)
+            if let cached = Cache.shared.lookup(key) {
+                return cached.georeference
+            }
+            guard let detail = try? await database.airportDetail(id: plate.airportId) else { return nil }
+            let runways = detail.airport.runways
+            let matched = await Task.detached(priority: .userInitiated) {
+                AirportDiagramGeoreference.match(url: url, runways: runways)
+            }.value
+            Cache.shared.store(key, georeference: matched, cycle: plate.cycle)
+            return matched
+
+        case .approach:
+            let key = cacheKey(for: plate)
+            if let cached = Cache.shared.lookup(key) {
+                return cached.georeference
+            }
+            guard let candidates = try? await fixCandidates(around: plate.airportId, database: database),
+                  !candidates.isEmpty else { return nil }
+            let matched = await Task.detached(priority: .userInitiated) {
+                ApproachFixGeoreference.match(url: url, candidates: candidates)
+            }.value
+            Cache.shared.store(key, georeference: matched, cycle: plate.cycle)
+            return matched
+
+        default:
+            // DPs and STARs are not drawn to scale; deliberately nil.
+            return nil
         }
-        guard let detail = try? await database.airportDetail(id: plate.airportId) else { return nil }
-        let runways = detail.airport.runways
-        let matched = await Task.detached(priority: .userInitiated) {
-            AirportDiagramGeoreference.match(url: url, runways: runways)
-        }.value
-        Cache.shared.store(key, georeference: matched, cycle: plate.cycle)
-        return matched
+    }
+
+    /// Everything a planview star could represent: fixes, navaids, and
+    /// runway thresholds within the widest span a planview covers
+    /// (TAA plates reach past their 30 NM rings).
+    private static func fixCandidates(around airportId: String, database: AeroDatabase) async throws -> [ApproachFixGeoreference.Candidate] {
+        guard let detail = try? await database.airportDetail(id: airportId) else { return [] }
+        let latitude = detail.airport.coordinate.latitude
+        let longitude = detail.airport.coordinate.longitude
+        let latSpan = 0.9
+        let lonSpan = latSpan / max(0.2, cos(latitude * .pi / 180))
+        let fixes = try await database.fixesIn(
+            minLat: latitude - latSpan, maxLat: latitude + latSpan,
+            minLon: longitude - lonSpan, maxLon: longitude + lonSpan, limit: 2000
+        )
+        let navaids = try await database.navaidsIn(
+            minLat: latitude - latSpan, maxLat: latitude + latSpan,
+            minLon: longitude - lonSpan, maxLon: longitude + lonSpan, limit: 300
+        )
+        var candidates = (fixes + navaids).map {
+            ApproachFixGeoreference.Candidate(identifier: $0.identifier, latitude: $0.latitude, longitude: $0.longitude)
+        }
+        for runway in detail.airport.runways {
+            for end in runway.ends {
+                guard let coordinate = end.coordinate else { continue }
+                candidates.append(ApproachFixGeoreference.Candidate(
+                    identifier: "RW\(end.designator)", latitude: coordinate.latitude, longitude: coordinate.longitude
+                ))
+            }
+        }
+        return candidates
     }
 
     private static func parseDetached(url: URL) async -> PlateGeoreference? {
@@ -37,7 +90,7 @@ enum PlateGeoreferenceResolver {
     }
 
     private static func cacheKey(for plate: PlateMetadata) -> String {
-        "\(AirportDiagramGeoreference.matcherVersion)|\(plate.pdfName)|\(plate.cycle)"
+        "\(AirportDiagramGeoreference.matcherVersion).\(ApproachFixGeoreference.matcherVersion)|\(plate.pdfName)|\(plate.cycle)"
     }
 
     // MARK: Cache
