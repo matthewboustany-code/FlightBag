@@ -5,7 +5,7 @@ import FBFISB
 /// Whole-world overlay backing the FIS-B NEXRAD mosaic. The renderer
 /// draws only the blocks intersecting each requested rect, so a global
 /// bounding rect costs nothing.
-final class FISBRadarOverlay: NSObject, MKOverlay {
+nonisolated final class FISBRadarOverlay: NSObject, MKOverlay {
     let coordinate = CLLocationCoordinate2D(latitude: 0, longitude: 0)
     let boundingMapRect = MKMapRect.world
 
@@ -22,7 +22,7 @@ final class FISBRadarOverlay: NSObject, MKOverlay {
 
 /// Draws NEXRAD intensity bins as lat/lon-aligned rectangles. CONUS goes
 /// down first; regional (finer) paints over it.
-final class FISBRadarRenderer: MKOverlayRenderer {
+nonisolated final class FISBRadarRenderer: MKOverlayRenderer {
     /// Standard 8-level NEXRAD ramp. Levels 0–1 are "no precipitation"
     /// and never drawn.
     private static let intensityColors: [CGColor?] = [

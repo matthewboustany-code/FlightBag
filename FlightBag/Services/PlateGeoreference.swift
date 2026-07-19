@@ -7,7 +7,7 @@ import UIKit
 /// approach charts carry a geospatial viewport (`/VP` → `/BBox` +
 /// `/Measure` with `/GPTS`/`/LPTS`); airport diagrams, DPs, and STARs do
 /// not, so `parse` returns nil for them and the UI degrades gracefully.
-struct PlateGeoreference: Sendable, Equatable {
+nonisolated struct PlateGeoreference: Sendable, Equatable {
     /// 1-based CGPDF page index the viewport lives on.
     let pageIndex: Int
     /// The georeferenced planview region, in PDF page points (y-up).
@@ -127,7 +127,7 @@ struct PlateGeoreference: Sendable, Equatable {
 
 /// Renders the georeferenced region of a plate PDF into a bitmap for the
 /// map overlay.
-enum PlateRasterizer {
+nonisolated enum PlateRasterizer {
     /// Long side is capped: one overlay bitmap, no zoom-dependent re-render.
     static func rasterize(url: URL, georeference: PlateGeoreference, maxDimension: CGFloat = 2048) -> CGImage? {
         guard let document = CGPDFDocument(url as CFURL),

@@ -11,7 +11,7 @@ import FBModels
 /// exactly as it does today (no overlay).
 ///
 /// Stages are `internal` so unit tests can exercise them individually.
-enum AirportDiagramGeoreference {
+nonisolated enum AirportDiagramGeoreference {
     /// Bump to invalidate PlateGeoreferenceResolver's cached results after
     /// algorithm changes.
     static let matcherVersion = 2
@@ -553,13 +553,13 @@ enum AirportDiagramGeoreference {
 }
 
 private extension SIMD2<Double> {
-    var length: Double { (x * x + y * y).squareRoot() }
-    var lengthSquared: Double { x * x + y * y }
+    nonisolated var length: Double { (x * x + y * y).squareRoot() }
+    nonisolated var lengthSquared: Double { x * x + y * y }
 }
 
 private extension Double {
     /// Angle normalized to [0, π).
-    var truncatedToHalfTurn: Double {
+    nonisolated var truncatedToHalfTurn: Double {
         var value = truncatingRemainder(dividingBy: .pi)
         if value < 0 { value += .pi }
         return value

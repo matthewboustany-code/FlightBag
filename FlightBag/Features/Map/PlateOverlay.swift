@@ -11,7 +11,7 @@ struct PlateOverlayImage: @unchecked Sendable {
 /// A rasterized approach plate pinned to its real-world footprint.
 /// Fully immutable after init — MapKit renders overlays on background
 /// threads, so there is nothing to lock (unlike the mutable FIS-B mosaic).
-final class PlateOverlay: NSObject, MKOverlay {
+nonisolated final class PlateOverlay: NSObject, MKOverlay {
     let image: CGImage
     /// Geographic corners in raster order: TL, TR, BR, BL.
     let corners: [CLLocationCoordinate2D]
@@ -45,7 +45,7 @@ final class PlateOverlay: NSObject, MKOverlay {
 /// its geographic corners. The fourth corner's residual (Lambert-vs-Mercator
 /// curvature over a ~0.5° chart) is negligible at plate scale — do not reuse
 /// this renderer for larger georeferenced products.
-final class PlateOverlayRenderer: MKOverlayRenderer {
+nonisolated final class PlateOverlayRenderer: MKOverlayRenderer {
     override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
         guard let overlay = overlay as? PlateOverlay, overlay.corners.count == 4 else { return }
         let topLeft = point(for: MKMapPoint(overlay.corners[0]))

@@ -82,7 +82,7 @@ actor PlateStore {
     /// Total plate bytes across all cycles (Downloads tab display). Only the
     /// `plates/` subtrees count — chart tiles have their own tally in
     /// ChartStore.
-    func storedByteCount() -> Int64 {
+    nonisolated func storedByteCount() -> Int64 {
         guard let cycles = try? FileManager.default.contentsOfDirectory(atPath: root.path) else { return 0 }
         var total: Int64 = 0
         for cycle in cycles {

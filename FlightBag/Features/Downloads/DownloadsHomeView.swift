@@ -105,7 +105,7 @@ struct DownloadsHomeView: View {
     }
 
     private func refreshStorage() async {
-        plateBytes = await environment.plateStore.storedByteCount()
+        plateBytes = environment.plateStore.storedByteCount()
         let store = environment.chartStore
         chartBytes = await Task.detached { store.storedByteCount() }.value
     }

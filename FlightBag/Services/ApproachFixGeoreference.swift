@@ -16,7 +16,7 @@ import FBModels
 /// stars (TAA insets, MSA circles) are rejected as fit outliers.
 ///
 /// Stages are `internal` so unit tests can exercise them individually.
-enum ApproachFixGeoreference {
+nonisolated enum ApproachFixGeoreference {
     /// Bump to invalidate PlateGeoreferenceResolver's cached results after
     /// algorithm changes.
     static let matcherVersion = 1
@@ -428,7 +428,7 @@ enum ApproachFixGeoreference {
         starPairs.sort { $0.2 > $1.2 }
         starPairs = Array(starPairs.prefix(60))
 
-        for (pageA, pageB, pageLength, pageAngle) in starPairs {
+        for (pageA, _, pageLength, pageAngle) in starPairs {
             for ai in 0..<meters.count {
                 for bi in 0..<meters.count where bi != ai {
                     let d = meters[bi] - meters[ai]

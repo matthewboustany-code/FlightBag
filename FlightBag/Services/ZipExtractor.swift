@@ -8,7 +8,7 @@ import Compression
 /// server's `zip -r` output — classic central-directory zips of stored or
 /// deflated PDFs. Zip64 (>4 GB or >65k entries) is rejected rather than
 /// parsed; the bundler would have to produce one for that to matter.
-enum ZipExtractor {
+nonisolated enum ZipExtractor {
     struct ZipError: Error, CustomStringConvertible {
         let description: String
         init(_ description: String) { self.description = description }

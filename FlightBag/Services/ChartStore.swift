@@ -58,7 +58,7 @@ struct ChartStore: Sendable {
     }
 
     /// Total chart-tile bytes across all cycles (Downloads tab display).
-    func storedByteCount() -> Int64 {
+    nonisolated func storedByteCount() -> Int64 {
         guard let cycles = try? FileManager.default.contentsOfDirectory(atPath: cyclesRoot.path) else { return 0 }
         var total: Int64 = 0
         for cycle in cycles {

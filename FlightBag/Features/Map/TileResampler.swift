@@ -6,7 +6,7 @@ import UIKit
 /// raster overlays on its own, so without this a chart goes blank exactly
 /// when a pilot zooms in (Retina rendering requests one level deeper than
 /// the visual zoom, making the problem bite early).
-enum TileResampler {
+nonisolated enum TileResampler {
     /// The parent path at `nativeMaxZ` covering the requested deeper tile.
     static func parent(of path: MKTileOverlayPath, nativeMaxZ: Int) -> MKTileOverlayPath {
         let dz = path.z - nativeMaxZ

@@ -56,11 +56,11 @@ final class GDL90Receiver {
         lastMessageAt = nil
         let listener = GDL90UDPListener(
             port: port,
-            onEvents: { [weak self] events in
-                Task { @MainActor in self?.apply(events) }
+            onEvents: { events in
+                Task { @MainActor [weak self] in self?.apply(events) }
             },
-            onFailure: { [weak self] message in
-                Task { @MainActor in self?.fail(message) }
+            onFailure: { message in
+                Task { @MainActor [weak self] in self?.fail(message) }
             }
         )
         self.listener = listener

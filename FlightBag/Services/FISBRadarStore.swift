@@ -9,7 +9,7 @@ import FBFISB
 final class FISBRadarStore {
     /// An immutable snapshot handed to the renderer, which draws off the
     /// main thread.
-    struct Mosaic: Sendable {
+    nonisolated struct Mosaic: Sendable {
         var regional: [Int: TimedBlock] = [:]
         var conus: [Int: TimedBlock] = [:]
 

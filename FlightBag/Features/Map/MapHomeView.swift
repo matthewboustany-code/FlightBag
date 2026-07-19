@@ -391,7 +391,7 @@ private struct LayersPanel: View {
                 }
                 .pickerStyle(.menu)
                 .accessibilityIdentifier("layers.chart")
-                if let chart = layers.chart {
+                if layers.chart != nil {
                     LabeledContent("Opacity") {
                         Slider(value: $layers.chartOpacity, in: 0.3...1)
                     }
