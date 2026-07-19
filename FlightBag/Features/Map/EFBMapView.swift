@@ -137,9 +137,12 @@ struct EFBMapView: UIViewRepresentable {
         private var fisbRadarKey: Int?
         private var advisoryOverlays: [AdvisoryPolygon] = []
         private var advisoryKey: String?
-        private var waypointAnnotations: [WaypointAnnotation] = []
-        private var airwayPolylines: [AirwayPolyline] = []
-        private var airspaceOverlays: [AdvisoryPolygon] = []
+        // Keyed for delta updates (like airportAnnotations): a pan re-adds
+        // only the points that actually entered the view, instead of tearing
+        // the whole layer down and rebuilding it.
+        private var waypointAnnotations: [String: WaypointAnnotation] = [:]
+        private var airwayPolylines: [String: AirwayPolyline] = [:]
+        private var airspaceOverlays: [String: AdvisoryPolygon] = [:]
         private var aeroKey: String?
         private var aeroTask: Task<Void, Never>?
         private var routePolyline: MKPolyline?
@@ -319,20 +322,59 @@ struct EFBMapView: UIViewRepresentable {
         }
 
         private func apply(waypoints: [AeroDatabase.MapWaypoint], airways: [AeroDatabase.AirwayLine], airspaces: [Airspace]?, on map: MKMapView) {
-            map.removeAnnotations(waypointAnnotations)
-            waypointAnnotations = waypoints.map(WaypointAnnotation.init)
-            map.addAnnotations(waypointAnnotations)
-
-            map.removeOverlays(airwayPolylines)
-            airwayPolylines = airways.map(AirwayPolyline.make)
-            map.addOverlays(airwayPolylines, level: .aboveLabels)
-
-            if let airspaces {
-                map.removeOverlays(airspaceOverlays)
-                airspaceOverlays = airspaces.flatMap { airspace in
-                    airspace.polygons.map { AdvisoryPolygon.makeAirspace(ring: $0, airspace: airspace) }
+            // Waypoints — delta by stable id ("ident-lat-lon"), so points
+            // still in view carry over untouched.
+            var keepWaypoints = Set<String>()
+            for waypoint in waypoints {
+                keepWaypoints.insert(waypoint.id)
+                if waypointAnnotations[waypoint.id] == nil {
+                    let annotation = WaypointAnnotation(waypoint: waypoint)
+                    waypointAnnotations[waypoint.id] = annotation
+                    map.addAnnotation(annotation)
                 }
-                map.addOverlays(airspaceOverlays, level: .aboveLabels)
+            }
+            let staleWaypoints = waypointAnnotations.filter { !keepWaypoints.contains($0.key) }
+            if !staleWaypoints.isEmpty {
+                map.removeAnnotations(Array(staleWaypoints.values))
+                for key in staleWaypoints.keys { waypointAnnotations[key] = nil }
+            }
+
+            // Airways — delta by ident; a route's geometry is fixed per ident,
+            // so a carried-over polyline is always current.
+            var keepAirways = Set<String>()
+            for line in airways {
+                keepAirways.insert(line.ident)
+                if airwayPolylines[line.ident] == nil {
+                    let polyline = AirwayPolyline.make(line)
+                    airwayPolylines[line.ident] = polyline
+                    map.addOverlay(polyline, level: .aboveLabels)
+                }
+            }
+            let staleAirways = airwayPolylines.filter { !keepAirways.contains($0.key) }
+            if !staleAirways.isEmpty {
+                map.removeOverlays(Array(staleAirways.values))
+                for key in staleAirways.keys { airwayPolylines[key] = nil }
+            }
+
+            // Airspace — nil = fetch failed: keep the previous boundaries.
+            if let airspaces {
+                var keepAirspace = Set<String>()
+                for airspace in airspaces {
+                    for (ringIndex, ring) in airspace.polygons.enumerated() {
+                        let key = "\(airspace.id)#\(ringIndex)"
+                        keepAirspace.insert(key)
+                        if airspaceOverlays[key] == nil {
+                            let polygon = AdvisoryPolygon.makeAirspace(ring: ring, airspace: airspace)
+                            airspaceOverlays[key] = polygon
+                            map.addOverlay(polygon, level: .aboveLabels)
+                        }
+                    }
+                }
+                let staleAirspace = airspaceOverlays.filter { !keepAirspace.contains($0.key) }
+                if !staleAirspace.isEmpty {
+                    map.removeOverlays(Array(staleAirspace.values))
+                    for key in staleAirspace.keys { airspaceOverlays[key] = nil }
+                }
             }
         }
 
@@ -355,7 +397,7 @@ struct EFBMapView: UIViewRepresentable {
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
             guard let map else { return }
-            let tappable = advisoryOverlays + airspaceOverlays
+            let tappable = advisoryOverlays + Array(airspaceOverlays.values)
             guard !tappable.isEmpty else { return }
             let point = gesture.location(in: map)
             // Let annotation taps win (they present the airport sheet).
@@ -616,15 +658,33 @@ struct EFBMapView: UIViewRepresentable {
 
         // MARK: Ownship
 
+        /// A fix older than this reads as stale — the feed dropped and the
+        /// marker no longer reflects where the aircraft is.
+        private static let ownshipStaleAfterSeconds: TimeInterval = 6
+
         func syncOwnship(on map: MKMapView, position: OwnshipPosition?, followOwnship: Bool, trackUp: Bool) {
-            guard let position else { return }
+            guard let position else {
+                // No position at all (permissions denied, never acquired):
+                // take the marker off the map rather than leave a stale one.
+                if ownshipOnMap {
+                    map.removeAnnotation(ownshipAnnotation)
+                    ownshipOnMap = false
+                }
+                return
+            }
             ownshipAnnotation.coordinate = position.coordinate
             ownshipAnnotation.trackDegrees = position.trackDegrees
             if !ownshipOnMap {
                 map.addAnnotation(ownshipAnnotation)
                 ownshipOnMap = true
             }
-            (map.view(for: ownshipAnnotation) as? OwnshipAnnotationView)?.updateRotation(map: map)
+            let ownshipView = map.view(for: ownshipAnnotation) as? OwnshipAnnotationView
+            ownshipView?.updateRotation(map: map)
+            // Dim a frozen fix so it reads as unreliable, not live. The
+            // receiver's 1 Hz tick (and CoreLocation updates) re-run
+            // updateUIView on the current→stale transition.
+            let isStale = Date().timeIntervalSince(position.timestamp) > Self.ownshipStaleAfterSeconds
+            ownshipView?.setStale(isStale)
 
             if followOwnship {
                 let camera = MKMapCamera(
@@ -869,5 +929,10 @@ final class OwnshipAnnotationView: MKAnnotationView {
         let track = annotation.trackDegrees ?? 0
         let relative = (track - map.camera.heading) * .pi / 180
         transform = CGAffineTransform(rotationAngle: relative)
+    }
+
+    /// Fade the marker when the position fix has gone stale.
+    func setStale(_ stale: Bool) {
+        alpha = stale ? 0.35 : 1
     }
 }

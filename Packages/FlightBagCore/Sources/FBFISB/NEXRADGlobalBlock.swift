@@ -141,8 +141,16 @@ public enum NEXRADBlockGeometry {
     /// Bounds of one bin within a block. Bin 0 is the block's northwest
     /// corner; bins scan west→east then north→south.
     public static func binBounds(blockNumber: Int, scaleFactor: Int, binIndex: Int) -> Bounds? {
-        guard binIndex >= 0 && binIndex < NEXRADGlobalBlock.binsPerBlock,
-              let block = bounds(blockNumber: blockNumber, scaleFactor: scaleFactor) else { return nil }
+        guard let block = bounds(blockNumber: blockNumber, scaleFactor: scaleFactor) else { return nil }
+        return binBounds(within: block, binIndex: binIndex)
+    }
+
+    /// Bounds of one bin given the block's already-computed bounds. Callers
+    /// drawing every bin of a block (the radar renderer) resolve the block
+    /// bounds once and reuse them, instead of recomputing block geometry per
+    /// bin.
+    public static func binBounds(within block: Bounds, binIndex: Int) -> Bounds? {
+        guard binIndex >= 0 && binIndex < NEXRADGlobalBlock.binsPerBlock else { return nil }
         let binRow = binIndex / NEXRADGlobalBlock.binsWide
         let binColumn = binIndex % NEXRADGlobalBlock.binsWide
         let binWidth = (block.east - block.west) / Double(NEXRADGlobalBlock.binsWide)

@@ -28,24 +28,75 @@ func routes(_ app: Application) throws {
     }
 
     // Normalized METAR/TAF for one airport. The backend is a cache/etiquette
-    // layer over aviationweather.gov; the app also keeps a direct path for
-    // in-flight fallback.
+    // layer over aviationweather.gov (a per-station TTL cache keeps repeated
+    // client requests from fanning out to the upstream API); the app also
+    // keeps a direct path for in-flight fallback.
     v1.get("airports", ":id", "weather") { req async throws -> AirportWeatherResponse in
         guard let id = req.parameters.get("id") else {
             throw Abort(.badRequest)
+        }
+        let cache = req.application.weatherCache
+        let key = id.uppercased()
+        if let cached = await cache.cached(key) {
+            return cached
         }
         let station = ICAOIdentifier(id)
         let provider = AviationWeatherGovProvider()
         async let metar = provider.metar(for: station)
         async let taf = provider.taf(for: station)
-        return AirportWeatherResponse(station: station, metar: try await metar, taf: try await taf)
+        let response = AirportWeatherResponse(station: station, metar: try await metar, taf: try await taf)
+        await cache.store(key, response)
+        return response
     }
 }
 
-struct AirportWeatherResponse: Content {
+struct AirportWeatherResponse: Content, Sendable {
     let station: ICAOIdentifier
     let metar: Metar?
     let taf: Taf?
+}
+
+/// Per-station TTL cache for the weather proxy: METAR/TAF refresh hourly, so a
+/// short window collapses bursts of client requests into one upstream fetch
+/// (the "etiquette" the endpoint promises aviationweather.gov).
+actor WeatherCache {
+    private struct Entry {
+        let response: AirportWeatherResponse
+        let fetchedAt: Date
+    }
+
+    private var entries: [String: Entry] = [:]
+    private let ttl: TimeInterval
+
+    init(ttl: TimeInterval = 300) {
+        self.ttl = ttl
+    }
+
+    func cached(_ station: String, now: Date = Date()) -> AirportWeatherResponse? {
+        guard let entry = entries[station], now.timeIntervalSince(entry.fetchedAt) < ttl else { return nil }
+        return entry.response
+    }
+
+    func store(_ station: String, _ response: AirportWeatherResponse, now: Date = Date()) {
+        entries[station] = Entry(response: response, fetchedAt: now)
+    }
+}
+
+extension Application {
+    private struct WeatherCacheKey: StorageKey {
+        typealias Value = WeatherCache
+    }
+
+    /// Configured once in `configure(_:)`; shared across requests.
+    var weatherCache: WeatherCache {
+        get {
+            guard let cache = storage[WeatherCacheKey.self] else {
+                fatalError("WeatherCache not configured — set app.weatherCache in configure(_:)")
+            }
+            return cache
+        }
+        set { storage[WeatherCacheKey.self] = newValue }
+    }
 }
 
 extension DownloadManifest: @retroactive RequestDecodable, @retroactive ResponseEncodable, @retroactive AsyncRequestDecodable, @retroactive AsyncResponseEncodable, Content {}

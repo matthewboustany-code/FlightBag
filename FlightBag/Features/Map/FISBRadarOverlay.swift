@@ -59,11 +59,8 @@ final class FISBRadarRenderer: MKOverlayRenderer {
 
             for (index, intensity) in block.intensities.enumerated() {
                 guard let color = Self.intensityColors[Int(intensity)],
-                      let binBounds = NEXRADBlockGeometry.binBounds(
-                        blockNumber: block.blockNumber,
-                        scaleFactor: block.scaleFactor,
-                        binIndex: index
-                      ) else { continue }
+                      let binBounds = NEXRADBlockGeometry.binBounds(within: bounds, binIndex: index)
+                      else { continue }
                 let binRect = Self.mapRect(for: binBounds)
                 guard binRect.intersects(mapRect) else { continue }
                 context.setFillColor(color)

@@ -15,6 +15,9 @@ public func configure(_ app: Application) async throws {
     // resume depends on.
     app.middleware.use(FileMiddleware(publicDirectory: app.directory.publicDirectory))
 
+    // Shared TTL cache backing /v1/airports/:id/weather.
+    app.weatherCache = WeatherCache()
+
     // Ingestion pipelines run as commands (locally during Phase 1, as
     // scheduled jobs once deployed): `swift run App ingest-nasr --cycle 2607`.
     app.asyncCommands.use(IngestNASRCommand(), as: "ingest-nasr")
