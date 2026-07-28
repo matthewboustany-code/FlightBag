@@ -8,6 +8,7 @@ struct AirportsHomeView: View {
     @State private var results: [AeroDatabase.SearchResult] = []
     @State private var searchTask: Task<Void, Never>?
     @State private var path = NavigationPath()
+    @State private var coverage: (airports: Int, countries: Int)?
     @AppStorage("recentAirports") private var recentAirportsStorage = ""
 
     private var recentIdentifiers: [String] {
@@ -28,9 +29,9 @@ struct AirportsHomeView: View {
                         }
                     } else {
                         ContentUnavailableView(
-                            "Search US Airports",
+                            "Search Airports",
                             systemImage: "airplane.arrival",
-                            description: Text("Runways, frequencies, weather, and approach plates for \(airportCountText) airports — all offline.")
+                            description: Text(coverageText)
                         )
                     }
                 } else if results.isEmpty {
@@ -64,6 +65,9 @@ struct AirportsHomeView: View {
                 if let identifier = UserDefaults.standard.string(forKey: "airportsDemoOpen") {
                     path.append(identifier)
                 }
+                if let db = environment.aeroDatabase {
+                    coverage = try? await db.coverageSummary()
+                }
             }
             .onChange(of: searchText) { _, newValue in
                 searchTask?.cancel()
@@ -76,8 +80,16 @@ struct AirportsHomeView: View {
         }
     }
 
-    private var airportCountText: String {
-        "19,000+"
+    /// Describes what is actually installed rather than asserting a fixed
+    /// number. Approach plates are called out separately because they really
+    /// are US-only, and folding them into a worldwide sentence would promise
+    /// coverage that does not exist.
+    private var coverageText: String {
+        guard let coverage else {
+            return "Runways, frequencies, and weather — all offline."
+        }
+        let airports = coverage.airports.formatted(.number.grouping(.automatic))
+        return "Runways, frequencies, and weather for \(airports) airports across \(coverage.countries) countries — all offline. Approach plates are US-only."
     }
 
     private func recordRecent(_ identifier: String) {

@@ -120,9 +120,9 @@ struct OurAirportsIngestor {
                     sql: """
                     INSERT OR REPLACE INTO airport
                     (id, icao_id, name, city, state, country, iso_region, lat, lon,
-                     elevation_ft, mag_var, tpa_ft, site_type, facility_use, ownership,
+                     elevation_ft, mag_var, tpa_ft, site_type, kind, facility_use, ownership,
                      status, authority)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     arguments: [
                         ident,
@@ -141,6 +141,7 @@ struct OurAirportsIngestor {
                         // a computed guess would look authoritative.
                         nil, nil,
                         type,
+                        AirportKind.fromOurAirports(type: type).rawValue,
                         nil, nil,
                         nil,
                         DataAuthority.ourAirports.rawValue,

@@ -42,12 +42,19 @@ struct AeroDatabaseBuilder {
                     mag_var REAL,
                     tpa_ft REAL,
                     site_type TEXT,
+                    -- Normalized category. site_type keeps each authority's
+                    -- own code for provenance; this is the one queries may
+                    -- filter on, because NASR's 'A' and OurAirports'
+                    -- 'large_airport' mean the same thing and neither
+                    -- vocabulary covers the other's rows.
+                    kind TEXT NOT NULL DEFAULT 'other',
                     facility_use TEXT,
                     ownership TEXT,
                     status TEXT,
                     authority TEXT NOT NULL DEFAULT 'faa'
                 );
                 CREATE INDEX idx_airport_country ON airport(country);
+                CREATE INDEX idx_airport_kind ON airport(kind);
                 -- remove_diacritics 2 folds the full Latin-1/extended range, so
                 -- "Koln" matches "Köln" and "Malaga" matches "Málaga". The
                 -- default (1) leaves many of those unfolded, which only stops
@@ -168,7 +175,7 @@ struct AeroDatabaseBuilder {
     /// 2: airway/airway_point tables. 3: procedure/procedure_leg (CIFP).
     /// 4: worldwide coverage — `airport.iso_region`, a country index, and
     /// diacritic-folding FTS so non-US names are searchable without accents.
-    static let schemaVersion = 4
+    static let schemaVersion = 5
 
     func setMeta(cycle: DataCycle) throws {
         try dbQueue.write { db in

@@ -237,10 +237,38 @@ import FBModels
         #expect(austin == 0)
     }
 
-    // MARK: Schema v4
+    // MARK: Schema v5
 
-    @Test func schemaVersionIsFour() {
-        #expect(AeroDatabaseBuilder.schemaVersion == 4)
+    /// Bumping this is a deliberate act: the app gates features on the
+    /// installed database's version, so a change here needs a matching guard
+    /// on the reading side.
+    @Test func schemaVersionIsFive() {
+        #expect(AeroDatabaseBuilder.schemaVersion == 5)
+    }
+
+    /// The bug `kind` was added for: OurAirports writes `large_airport` into
+    /// `site_type`, so the app's `site_type = 'A'` test — a NASR idiom —
+    /// matched nothing outside the US and emptied the map there.
+    @Test func normalizedKindIsWrittenForOurAirportsRows() throws {
+        let (builder, url) = try makeBuilder()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        _ = try ingestor().ingestAirports(table(Self.airportsCSV), excluding: [], into: builder)
+
+        let kinds = try builder.dbQueue.read { db in
+            try Row.fetchAll(db, sql: "SELECT id, site_type, kind FROM airport ORDER BY id")
+        }
+        #expect(!kinds.isEmpty)
+        for row in kinds {
+            let siteType: String? = row["site_type"]
+            let kind: String = row["kind"]
+            #expect(kind == AirportKind.fromOurAirports(type: siteType).rawValue)
+            // Nothing may be left on the schema default while site_type says
+            // otherwise — that is exactly how rows fall off the map.
+            if siteType?.hasSuffix("_airport") == true {
+                #expect(kind == AirportKind.airport.rawValue)
+            }
+        }
     }
 
     @Test func searchFoldsDiacritics() throws {

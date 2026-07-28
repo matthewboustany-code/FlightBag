@@ -157,6 +157,7 @@ package dir) — the XCUITest ban applies only to the app's UI tests.
 | New data in `aero.sqlite` | `AeroDatabaseBuilder.swift` (server) **and** `AeroDatabase.swift` (app) — schema must match |
 | Units / non-US weather forms | FBModels `UnitPreferences` + `Jurisdiction`, app-side `UnitSettings.swift`, `WeatherDecoding.swift`. Note `runwayLength` is its own dimension, not a follower of `altitude` — ICAO states fly feet and publish runways in metres |
 | Worldwide airport/navaid data | server `OurAirportsIngestor.swift` (NASR stays authoritative for the US; see `coveredCountries`) |
+| "Why is this row missing from the map/search?" | `airport.kind` (schema v5), not `site_type`. Each authority writes its own dialect into `site_type` — NASR `A`/`H`/`C`, OurAirports `large_airport`/`heliport` — so only `kind` is safe to filter on. FBModels `AirportKind`; app-side `AeroDatabase.landingFacilityPredicate` falls back to the old test on v4 databases |
 | "Why is this feature missing abroad?" | FBModels `Capability` + `RuleSet.capabilities`, app-side `CapabilityNotice.swift` |
 | Magnetic variation / magnetic courses | FBModels `MagneticModel.swift`; consumed by `NavLogBuilder` (per leg, at the planned departure date) and `AirportDetailView.magneticVariationRow`. Updating the model = drop in the next `WMM.COF` and change the epoch/validity |
 | Worldwide airspace | `OpenAIPAirspaceProvider` (CC BY-NC, needs a key; `AirspaceStore` picks it by viewport centre) |
