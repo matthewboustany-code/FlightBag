@@ -157,6 +157,8 @@ package dir) — the XCUITest ban applies only to the app's UI tests.
 | New data in `aero.sqlite` | `AeroDatabaseBuilder.swift` (server) **and** `AeroDatabase.swift` (app) — schema must match |
 | Units / non-US weather forms | FBModels `UnitPreferences` + `Jurisdiction`, app-side `UnitSettings.swift`, `WeatherDecoding.swift` |
 | Worldwide airport/navaid data | server `OurAirportsIngestor.swift` (NASR stays authoritative for the US; see `coveredCountries`) |
+| "Why is this feature missing abroad?" | FBModels `Capability` + `RuleSet.capabilities`, app-side `CapabilityNotice.swift` |
+| Worldwide airspace | `OpenAIPAirspaceProvider` (CC BY-NC, needs a key; `AirspaceStore` picks it by viewport centre) |
 | Downloads / cycles | FBModels `DataCycle` + `DownloadManifest`/`Region`, `DownloadCenter.swift`, `DownloadsHomeView.swift` |
 | Chart-region downloads end-to-end | server `ManifestBuilder`/`ChartCatalog` → app `ManifestClient` → `DownloadCenter` → `ChartStore` (map picks tiles up via `chartsVersion`) |
 | Deploying / operating the data server | `Server/DEPLOY.md`, then `docker-compose.yml` + `IngestAllCommand.swift` |
