@@ -102,6 +102,7 @@ final class AppEnvironment {
     /// degraded state rather than crashing.
     let aeroDatabase: AeroDatabase?
     let weatherStore: WeatherStore
+    let notamStore: NotamStore
     let plateStore: PlateStore
     let chartStore = ChartStore()
     let downloadCenter = DownloadCenter()
@@ -127,6 +128,9 @@ final class AppEnvironment {
     /// Bumped when FIS-B text lands in the weather cache, so open airport
     /// screens pick up uplinked weather without a manual refresh.
     private(set) var fisbWeatherVersion = 0
+    /// The same, for uplinked NOTAMs. Separate from the weather counter so a
+    /// burst of METARs doesn't re-query the NOTAM cache and vice versa.
+    private(set) var fisbNotamVersion = 0
 
     /// Route drawn on the map tab; set from a flight, cleared from the map.
     var activeMapRoute: ActiveMapRoute?
@@ -139,12 +143,37 @@ final class AppEnvironment {
     /// One-shot tab-switch request ("Show on map"); RootTabView consumes it.
     var requestedTab: AppTab?
 
+    /// NOTAMs the map may draw. Sourced from the active route's airports —
+    /// the map has no viewport NOTAM query, and drawing every cached NOTAM
+    /// regardless of where you're looking would be noise, not information.
+    /// `NotamStore` is an actor; the map needs a synchronous read, so the
+    /// drawable set is mirrored here.
+    private(set) var mapNotams: [Notam] = []
+
+    /// Refreshes `mapNotams` from the active route's airports. A no-op with
+    /// no route, which is also how the layer empties when one is cleared.
+    func refreshMapNotams() async {
+        guard let route = activeMapRoute else {
+            mapNotams = []
+            return
+        }
+        let stations = route.points
+            .filter { $0.kind == ResolvedWaypoint.Kind.airport.rawValue }
+            .map { ICAOIdentifier($0.identifier) }
+        guard !stations.isEmpty else {
+            mapNotams = []
+            return
+        }
+        mapNotams = await notamStore.briefing(for: stations).flatMap(\.result.notams)
+    }
+
     init(
         weatherProvider: any WeatherProvider = AppEnvironment.defaultWeatherProvider(),
         filingService: any FilingService = LocalDraftFilingService()
     ) {
         self.aeroDatabase = try? AeroDatabase.open()
         self.weatherStore = WeatherStore(provider: weatherProvider)
+        self.notamStore = NotamStore()
         self.plateStore = PlateStore()
         self.filingService = filingService
         self.positionSource = CompositePositionSource(
@@ -163,18 +192,32 @@ final class AppEnvironment {
         gdl90Receiver.onTraffic = { [trafficStore] report in
             trafficStore.ingest(report: report)
         }
-        gdl90Receiver.onFISB = { [weak self, fisbRadarStore, weatherStore] product in
+        gdl90Receiver.onFISB = { [weak self, fisbRadarStore, weatherStore, notamStore] product in
             switch product {
             case .nexrad(let radar):
                 fisbRadarStore.ingest(radar)
             case .text(let reports):
+                // One uplink payload can carry both weather and NOTAMs;
+                // route each to its own store rather than making either
+                // filter the other's records out.
+                let notamReports = reports.filter { $0.kind.isNotam }
+                let weatherReports = reports.filter { !$0.kind.isNotam }
                 Task { @MainActor in
-                    await weatherStore.ingestFISB(reports: reports)
-                    self?.fisbWeatherVersion += 1
+                    if !weatherReports.isEmpty {
+                        await weatherStore.ingestFISB(reports: weatherReports)
+                        self?.fisbWeatherVersion += 1
+                    }
+                    if !notamReports.isEmpty {
+                        await notamStore.ingestFISB(reports: notamReports)
+                        self?.fisbNotamVersion += 1
+                    }
                 }
             default:
                 break
             }
+        }
+        if UserDefaults.standard.bool(forKey: "notamsDemoSeed") {
+            Task { [notamStore] in await notamStore.seedDemoData() }
         }
         gdl90Receiver.onTick = { [weak self] _ in
             guard let self else { return }

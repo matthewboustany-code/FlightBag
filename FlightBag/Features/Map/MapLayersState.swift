@@ -104,6 +104,9 @@ final class MapLayersState {
     var airmetSierraEnabled = false
     var airmetTangoEnabled = false
     var airmetZuluEnabled = false
+    /// Off by default: NOTAM circles cluster tightly around a busy field and
+    /// would bury the chart the moment a route is loaded.
+    var notamsEnabled = false
 
     /// When enabled, only advisories whose altitude band includes the planned
     /// altitude are drawn; advisories without published altitudes always show.
@@ -118,7 +121,8 @@ final class MapLayersState {
     }
 
     var anyAdvisoryEnabled: Bool {
-        tfrsEnabled || sigmetsEnabled || airmetSierraEnabled || airmetTangoEnabled || airmetZuluEnabled
+        tfrsEnabled || sigmetsEnabled || airmetSierraEnabled || airmetTangoEnabled
+            || airmetZuluEnabled || notamsEnabled
     }
 
     /// Downloaded tile sets found on disk; refreshed when the map appears.

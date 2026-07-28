@@ -1,0 +1,78 @@
+{
+  "status": "SUCCESS",
+  "data": {
+    "geojson": [
+      {
+        "type": "Feature",
+        "geometry": {
+          "type": "Point",
+          "coordinates": [-97.6698889, 30.1945278]
+        },
+        "properties": {
+          "coreNOTAMData": {
+            "notam": {
+              "id": "NOTAM_1_78530224",
+              "number": "01/005",
+              "type": "N",
+              "issued": "2026-07-02T15:30:00.000Z",
+              "selectionCode": "QMXLC",
+              "location": "AUS",
+              "icaoLocation": "KAUS",
+              "effectiveStart": "2026-07-02T15:30:00.000Z",
+              "effectiveEnd": "2026-09-01T23:59:00.000Z",
+              "text": "TWY A CLSD",
+              "classification": "DOMESTIC",
+              "accountId": "KAUS",
+              "radius": "005",
+              "minimumFL": "000",
+              "maximumFL": "999"
+            }
+          }
+        }
+      },
+      {
+        "type": "Feature",
+        "geometry": null,
+        "properties": {
+          "coreNOTAMData": {
+            "notam": {
+              "id": "NOTAM_1_78530225",
+              "number": "01/006",
+              "selectionCode": "QOBCE",
+              "icaoLocation": "KAUS",
+              "effectiveStart": "2026-06-15T00:00:00.000Z",
+              "effectiveEnd": "PERM",
+              "text": "OBST CRANE ERECTED 1.2NM SW APCH END RWY 18L (ASR 1234567) 620FT AGL",
+              "translatedText": "Obstruction: crane erected 1.2 nautical miles southwest of the approach end of runway 18L, 620 feet above ground level.",
+              "classification": "DOMESTIC",
+              "radius": "003",
+              "minimumFL": "000",
+              "maximumFL": "010"
+            }
+          }
+        }
+      },
+      {
+        "type": "Feature",
+        "geometry": {
+          "type": "Point",
+          "coordinates": [-97.67, 30.19]
+        },
+        "properties": {
+          "coreNOTAMData": {
+            "notam": {
+              "id": "NOTAM_1_78530226",
+              "number": "01/007",
+              "icaoLocation": "KAUS",
+              "effectiveStart": "2026-07-20T12:00:00.000Z",
+              "effectiveEnd": "2026-07-21T12:00:00.000Z",
+              "classification": "DOMESTIC",
+              "radius": "000",
+              "text": ""
+            }
+          }
+        }
+      }
+    ]
+  }
+}

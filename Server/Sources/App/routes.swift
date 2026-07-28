@@ -48,12 +48,57 @@ func routes(_ app: Application) throws {
         await cache.store(key, response)
         return response
     }
+
+    // NOTAMs for one airport. Unlike weather, this endpoint is the *only*
+    // path the app has: the FAA's NOTAM Management Service authenticates with
+    // OAuth client credentials that must not ship in an app binary, so the
+    // token lives here and the app never talks to the FAA directly.
+    v1.get("airports", ":id", "notams") { req async throws -> AirportNotamsResponse in
+        guard let id = req.parameters.get("id") else {
+            throw Abort(.badRequest)
+        }
+        let station = ICAOIdentifier(id)
+
+        // No credentials configured is a normal state for a self-hoster, not
+        // an error. Say so explicitly rather than returning an empty list the
+        // app would render as "no NOTAMs here" — the dangerous reading.
+        guard let provider = req.application.notamProvider else {
+            return AirportNotamsResponse(station: station, configured: false, notams: [])
+        }
+
+        let cache = req.application.notamCache
+        let key = id.uppercased()
+        if let cached = await cache.cached(key) {
+            return cached
+        }
+        do {
+            let notams = try await provider.notams(for: station)
+            let response = AirportNotamsResponse(station: station, configured: true, notams: notams)
+            await cache.store(key, response)
+            return response
+        } catch {
+            // 502, never an empty 200: the app must fall back to its own
+            // cached NOTAMs rather than draw the conclusion that this airport
+            // has none. Bad credentials and an FAA outage look the same from
+            // here, so the detail goes to the log, not the client.
+            req.logger.error("NMS NOTAM fetch failed for \(key): \(error)")
+            throw Abort(.badGateway, reason: "NOTAM service unavailable")
+        }
+    }
 }
 
 struct AirportWeatherResponse: Content, Sendable {
     let station: ICAOIdentifier
     let metar: Metar?
     let taf: Taf?
+}
+
+struct AirportNotamsResponse: Content, Sendable {
+    let station: ICAOIdentifier
+    /// False when the server has no FAA NMS credentials. Lets the app tell
+    /// "this server can't fetch NOTAMs" apart from "this airport has none".
+    let configured: Bool
+    let notams: [Notam]
 }
 
 /// Per-station TTL cache for the weather proxy: METAR/TAF refresh hourly, so a
@@ -82,9 +127,45 @@ actor WeatherCache {
     }
 }
 
+/// Per-station TTL cache for the NOTAM proxy. The TTL is far longer than the
+/// weather one: NOTAMs change on the order of hours, the upstream is a
+/// credentialed government API worth being frugal with, and a stale-by-minutes
+/// NOTAM is not a safety difference — the app stamps everything with its age
+/// regardless.
+actor NotamCache {
+    private struct Entry {
+        let response: AirportNotamsResponse
+        let fetchedAt: Date
+    }
+
+    private var entries: [String: Entry] = [:]
+    private let ttl: TimeInterval
+
+    init(ttl: TimeInterval = 900) {
+        self.ttl = ttl
+    }
+
+    func cached(_ station: String, now: Date = Date()) -> AirportNotamsResponse? {
+        guard let entry = entries[station], now.timeIntervalSince(entry.fetchedAt) < ttl else { return nil }
+        return entry.response
+    }
+
+    func store(_ station: String, _ response: AirportNotamsResponse, now: Date = Date()) {
+        entries[station] = Entry(response: response, fetchedAt: now)
+    }
+}
+
 extension Application {
     private struct WeatherCacheKey: StorageKey {
         typealias Value = WeatherCache
+    }
+
+    private struct NotamCacheKey: StorageKey {
+        typealias Value = NotamCache
+    }
+
+    private struct NotamProviderKey: StorageKey {
+        typealias Value = FAANotamProvider
     }
 
     /// Configured once in `configure(_:)`; shared across requests.
@@ -96,6 +177,24 @@ extension Application {
             return cache
         }
         set { storage[WeatherCacheKey.self] = newValue }
+    }
+
+    var notamCache: NotamCache {
+        get {
+            guard let cache = storage[NotamCacheKey.self] else {
+                fatalError("NotamCache not configured — set app.notamCache in configure(_:)")
+            }
+            return cache
+        }
+        set { storage[NotamCacheKey.self] = newValue }
+    }
+
+    /// nil when no FAA NMS credentials are configured — a supported state,
+    /// not a misconfiguration. One provider is shared so its OAuth token is
+    /// fetched once rather than per request.
+    var notamProvider: FAANotamProvider? {
+        get { storage[NotamProviderKey.self] }
+        set { storage[NotamProviderKey.self] = newValue }
     }
 }
 

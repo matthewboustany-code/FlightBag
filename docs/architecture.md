@@ -32,6 +32,7 @@ the project history; this records the load-bearing choices.
 | Units | Canonical storage (hPa, SM, ft, NM, kt); `UnitPreferences` converts only for display, `Jurisdiction` picks the default | A preference must never rewrite what an observation said — wind stays in knots, the ICAO reporting unit, everywhere |
 | Rules vs. provenance | `DataAuthority` = who published a row; `Jurisdiction`/`RuleSet` = whose rules apply there | The two diverge as soon as data stops being FAA-only: OurAirports is the *authority* for a German aerodrome, EASA its *jurisdiction* |
 | Magnetic variation | Computed from the embedded NOAA WMM, **except** where a state publishes one (NASR), which wins | Variation is a field, not an airport property — it swings by tens of degrees along a route, and no non-US source in the stack carries one, so without a model every magnetic course outside the US is missing. The published figure still wins where it exists, because that is what the runways were charted against |
+| NOTAMs | Server-proxied only (`/v1/airports/:id/notams`), never app-to-FAA | NMS authenticates with OAuth client credentials, which cannot ship in an IPA and cannot be rotated once leaked. The token lives on the server; the app's offline story is its own disk cache plus the FIS-B uplink |
 | Offline | Hard requirement from Phase 1 | Cockpit connectivity assumption is zero |
 
 ## Operational cadence
@@ -48,7 +49,12 @@ effective instant. UI shows freshness badges everywhere.
    fast-follow, not a Phase 3 blocker: assisted filing (handoff to
    1800wxbrief) is the shipping path. Registering as a business entity (LLC)
    strengthens the ask and is worth considering for liability regardless.
-2. **FAA NOTAM API key** — free registration at external.faa.gov.
+2. **FAA NMS credentials** — request a client id/secret by emailing
+   NOTAMS@faa.gov. NOTAMs ship without them (the endpoint reports
+   `configured: false` and the app says so); they are what turns the feature
+   on. Note the target is the **NOTAM Management Service**, not the older
+   `external-api.faa.gov` FNS API: NMS replaced the US NOTAM System on
+   2026-04-18 and FNS retires later in 2026.
 3. **Apple multicast entitlement** (`com.apple.developer.networking.multicast`)
    — required only to receive *broadcast* GDL90. Mainstream receivers
    (Stratux, Sentry) unicast to each DHCP client, which needs no

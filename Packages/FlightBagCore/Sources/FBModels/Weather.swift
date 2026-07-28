@@ -140,6 +140,17 @@ public struct Notam: Codable, Sendable, Hashable, Identifiable {
     public var effectiveEnd: Date?
     /// True when the end time is "PERM" or estimated.
     public var endIsEstimated: Bool
+    /// Q-line subject/condition code, e.g. "QMXLC" (taxiway closed). Lets a
+    /// NOTAM be categorised without re-parsing its free text.
+    public var qCode: String?
+    /// Centre of the affected area, where the source publishes one. Absent
+    /// for plenty of real NOTAMs — geometry is optional in the source data,
+    /// not merely optional in this model.
+    public var coordinate: Coordinate?
+    /// Radius about `coordinate`, as published. Only meaningful with one.
+    public var radiusNM: Double?
+    public var lowerLimitFt: Int?
+    public var upperLimitFt: Int?
 
     public init(
         id: String,
@@ -148,7 +159,12 @@ public struct Notam: Codable, Sendable, Hashable, Identifiable {
         classification: String? = nil,
         effectiveStart: Date? = nil,
         effectiveEnd: Date? = nil,
-        endIsEstimated: Bool = false
+        endIsEstimated: Bool = false,
+        qCode: String? = nil,
+        coordinate: Coordinate? = nil,
+        radiusNM: Double? = nil,
+        lowerLimitFt: Int? = nil,
+        upperLimitFt: Int? = nil
     ) {
         self.id = id
         self.location = location
@@ -157,5 +173,28 @@ public struct Notam: Codable, Sendable, Hashable, Identifiable {
         self.effectiveStart = effectiveStart
         self.effectiveEnd = effectiveEnd
         self.endIsEstimated = endIsEstimated
+        self.qCode = qCode
+        self.coordinate = coordinate
+        self.radiusNM = radiusNM
+        self.lowerLimitFt = lowerLimitFt
+        self.upperLimitFt = upperLimitFt
+    }
+
+    /// Whether the NOTAM is in force at `date`.
+    ///
+    /// A missing start or end reads as "in force", never as "expired" — the
+    /// safe failure for a notice whose validity the source didn't state.
+    /// `endIsEstimated` ends (PERM/EST) likewise stay active past their
+    /// nominal end, which is what the estimate means.
+    public func isActive(at date: Date = Date()) -> Bool {
+        if let effectiveStart, date < effectiveStart { return false }
+        if let effectiveEnd, !endIsEstimated, date > effectiveEnd { return false }
+        return true
+    }
+
+    /// Drawable geometry, if this NOTAM published any.
+    public var mapCircle: (centre: Coordinate, radiusNM: Double)? {
+        guard let coordinate, let radiusNM, radiusNM > 0 else { return nil }
+        return (coordinate, radiusNM)
     }
 }

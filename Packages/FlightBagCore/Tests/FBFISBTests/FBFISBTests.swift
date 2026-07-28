@@ -115,6 +115,21 @@ import Testing
         }
     }
 
+    /// Product 8 carries NOTAMs in the same DLAC records as product 413.
+    @Test func notamProductDecodesAsText() {
+        let text = "NOTAM-D KAUS 01/005 TWY A CLSD\u{1E}NOTAM-FDC KAUS 1/2345 SPECIAL NOTICE"
+        let body = FISBEncoding.apdu(productID: 8, hours: 19, minutes: 53, payload: DLAC.encode(text))
+        guard case .text(let reports)? = FISBAPDU.parse(body)?.decodeProduct() else {
+            Issue.record("Expected product 8 to decode as text")
+            return
+        }
+        #expect(reports.count == 2)
+        #expect(reports.filter { $0.kind.isNotam }.count == 2)
+        #expect(reports.first?.kind == .notamD)
+        #expect(reports.first?.station == "KAUS")
+        #expect(reports.last?.kind == .notamFDC)
+    }
+
     @Test func tooShortBodyReturnsNil() {
         #expect(FISBAPDU.parse([0x06, 0x75, 0x3B]) == nil)
     }

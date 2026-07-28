@@ -92,7 +92,12 @@ struct EFBMapView: UIViewRepresentable {
         coordinator.layersState = layers
         coordinator.syncOverlays(on: map, layers: layers)
         coordinator.syncFISBRadar(on: map, store: environment.fisbRadarStore, layers: layers)
-        coordinator.syncAdvisories(on: map, layers: layers, store: environment.advisoryStore)
+        coordinator.syncAdvisories(
+            on: map,
+            layers: layers,
+            store: environment.advisoryStore,
+            notams: environment.mapNotams
+        )
         coordinator.refreshAeronautical(on: map)
         coordinator.syncRoute(on: map, route: route)
         coordinator.syncProcedure(on: map, procedure: procedure)
@@ -388,18 +393,26 @@ struct EFBMapView: UIViewRepresentable {
 
         // MARK: Advisories
 
-        func syncAdvisories(on map: MKMapView, layers: MapLayersState, store: AdvisoryStore) {
+        func syncAdvisories(
+            on map: MKMapView,
+            layers: MapLayersState,
+            store: AdvisoryStore,
+            notams: [Notam]
+        ) {
             let key = [
                 layers.tfrsEnabled, layers.sigmetsEnabled, layers.airmetSierraEnabled,
-                layers.airmetTangoEnabled, layers.airmetZuluEnabled,
+                layers.airmetTangoEnabled, layers.airmetZuluEnabled, layers.notamsEnabled,
             ].map { $0 ? "1" : "0" }.joined()
                 + "|\(store.dataVersion)"
                 + "|\(layers.advisoryAltitudeFilterEnabled ? Int(layers.advisoryFilterAltitudeFt) : -1)"
+                // NOTAM ids rather than a count: swapping one route's NOTAMs
+                // for another's can leave the count unchanged.
+                + "|\(notams.map(\.id).joined(separator: ",").hashValue)"
             guard key != advisoryKey else { return }
             advisoryKey = key
 
             map.removeOverlays(advisoryOverlays)
-            advisoryOverlays = AdvisoryOverlayBuilder.overlays(layers: layers, store: store)
+            advisoryOverlays = AdvisoryOverlayBuilder.overlays(layers: layers, store: store, notams: notams)
             map.addOverlays(advisoryOverlays, level: .aboveLabels)
         }
 

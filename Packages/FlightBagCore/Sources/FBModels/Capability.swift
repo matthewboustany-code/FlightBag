@@ -25,6 +25,8 @@ public enum Capability: String, Codable, Sendable, CaseIterable, Hashable {
     case assistedFiling
     /// The FAA VFR/MVFR/IFR/LIFR category scheme.
     case flightCategories
+    /// NOTAMs from the FAA NOTAM Management Service.
+    case notams
 
     /// Why a capability is unavailable, phrased for a pilot rather than a
     /// developer. Shown in place of the feature instead of hiding it silently,
@@ -47,6 +49,8 @@ public enum Capability: String, Codable, Sendable, CaseIterable, Hashable {
             "Assisted filing hands off to 1800wxbrief, which files US flight plans. File through your local AIS."
         case .flightCategories:
             "VFR/MVFR/IFR/LIFR are FAA definitions and don't apply outside US airspace."
+        case .notams:
+            "NOTAMs come from the FAA and cover US airspace only. Brief through your local AIS."
         }
     }
 }
