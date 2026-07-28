@@ -9,6 +9,14 @@ public struct NavLogLeg: Sendable, Hashable, Identifiable {
     public var distanceNM: Double
     /// Initial great-circle course, degrees true.
     public var courseTrue: Double
+    /// Magnetic variation at the start of the leg, degrees, east positive.
+    public var magneticVariation: Double
+    /// Initial course in degrees magnetic — the number actually flown.
+    ///
+    /// Evaluated at the leg's start point, the same instant `courseTrue`
+    /// describes, so the pair stays coherent: this is the heading to set
+    /// rolling out on course, not an average over the leg.
+    public var courseMagnetic: Double
     /// Wind applied to this leg (direction the wind is from, degrees true).
     public var windFromDegrees: Double?
     public var windSpeedKt: Double?
@@ -24,12 +32,25 @@ public struct NavLog: Sendable, Hashable {
     public var totalDistanceNM: Double
     public var totalEteSeconds: Double?
     public var totalFuelGallons: Double?
+    /// Whether the magnetic model covers the flight's date.
+    ///
+    /// Carried once for the whole log rather than per leg: it is a property of
+    /// the shipped model, not of any particular leg, and the UI needs to say
+    /// "these magnetic courses are from an expired model" exactly once.
+    public var magneticModelValidity: WorldMagneticModel.Validity
 
-    public init(legs: [NavLogLeg], totalDistanceNM: Double, totalEteSeconds: Double?, totalFuelGallons: Double?) {
+    public init(
+        legs: [NavLogLeg],
+        totalDistanceNM: Double,
+        totalEteSeconds: Double?,
+        totalFuelGallons: Double?,
+        magneticModelValidity: WorldMagneticModel.Validity = .valid
+    ) {
         self.legs = legs
         self.totalDistanceNM = totalDistanceNM
         self.totalEteSeconds = totalEteSeconds
         self.totalFuelGallons = totalFuelGallons
+        self.magneticModelValidity = magneticModelValidity
     }
 }
 
@@ -49,16 +70,29 @@ public enum NavLogBuilder {
     /// Build a navlog over the route's flown waypoint sequence. ETE and fuel
     /// stay nil when performance figures are missing so the UI can show
     /// distance-only logs for flights without an aircraft profile.
+    ///
+    /// Magnetic variation is computed per leg from the World Magnetic Model
+    /// rather than read off the departure airport: variation is a field, not
+    /// an airport property, and it swings by tens of degrees over a long
+    /// route. It is also the only way to get a magnetic course at all outside
+    /// the US, where no aerodrome record carries one.
+    ///
+    /// `date` matters because variation drifts measurably year to year — pass
+    /// the planned departure date rather than letting it default when one is
+    /// known.
     public static func build(
         route: ParsedRoute,
         cruiseTASKt: Double? = nil,
         fuelBurnGPH: Double? = nil,
+        date: Date = Date(),
+        magneticModel: WorldMagneticModel = .wmm2025,
         wind: (Coordinate) -> LegWind? = { _ in nil }
     ) -> NavLog {
         let waypoints = route.waypoints
         var legs: [NavLogLeg] = []
         var cumulativeDistance = 0.0
         var cumulativeEte: Double? = 0
+        var validity = WorldMagneticModel.Validity.valid
 
         for (index, pair) in zip(waypoints, waypoints.dropFirst()).enumerated() {
             let (from, to) = pair
@@ -69,6 +103,10 @@ public enum NavLogBuilder {
                 longitude: (from.coordinate.longitude + to.coordinate.longitude) / 2
             )
             let legWind = wind(midpoint)
+
+            let magnetic = magneticModel.field(at: from.coordinate, on: date)
+            validity = magnetic.validity
+            let variation = magnetic.field.declination
 
             var groundSpeed: Double?
             if let tas = cruiseTASKt, tas > 0 {
@@ -104,6 +142,8 @@ public enum NavLogBuilder {
                 to: to,
                 distanceNM: distance,
                 courseTrue: course,
+                magneticVariation: variation,
+                courseMagnetic: NavMath.magneticCourse(trueCourse: course, variation: variation),
                 windFromDegrees: legWind?.fromDegrees,
                 windSpeedKt: legWind?.speedKt,
                 groundSpeedKt: groundSpeed,
@@ -118,7 +158,8 @@ public enum NavLogBuilder {
             legs: legs,
             totalDistanceNM: cumulativeDistance,
             totalEteSeconds: legs.isEmpty ? nil : cumulativeEte,
-            totalFuelGallons: legs.compactMap(\.fuelGallons).isEmpty ? nil : legs.compactMap(\.fuelGallons).reduce(0, +)
+            totalFuelGallons: legs.compactMap(\.fuelGallons).isEmpty ? nil : legs.compactMap(\.fuelGallons).reduce(0, +),
+            magneticModelValidity: validity
         )
     }
 }

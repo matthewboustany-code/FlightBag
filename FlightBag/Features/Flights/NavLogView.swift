@@ -31,12 +31,21 @@ struct NavLogView: View {
                             NavLogLegRow(leg: leg, units: units)
                         }
                     } footer: {
-                        Label(
-                            windsApplied
-                                ? "Winds aloft: FB forecast via aviationweather.gov, nearest station per leg."
-                                : "No winds applied (offline or no forecast) — times assume calm air.",
-                            systemImage: windsApplied ? "wind" : "wind.slash"
-                        )
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label(
+                                windsApplied
+                                    ? "Winds aloft: FB forecast via aviationweather.gov, nearest station per leg."
+                                    : "No winds applied (offline or no forecast) — times assume calm air.",
+                                systemImage: windsApplied ? "wind" : "wind.slash"
+                            )
+                            // Silence would let an out-of-date model pass for a
+                            // current one, which is the whole failure this
+                            // check exists to prevent.
+                            if let warning = Self.magneticModelWarning(navLog.magneticModelValidity) {
+                                Label(warning, systemImage: "exclamationmark.triangle.fill")
+                                    .foregroundStyle(.orange)
+                            }
+                        }
                     }
 
                     Section("Totals") {
@@ -90,10 +99,15 @@ struct NavLogView: View {
         let altitude = Self.cruiseAltitudeFeet(from: flight.flightPlanData) ?? 6000
         windsApplied = !located.isEmpty
 
+        // Variation drifts year to year, so the navlog is computed for the
+        // planned departure rather than for whenever the view happened to open.
+        let departureDate = FlightPlanCodec.decode(flight.flightPlanData)?.departureTime ?? Date()
+
         navLog = NavLogBuilder.build(
             route: parsedRoute,
             cruiseTASKt: (tas ?? 0) > 0 ? tas : nil,
-            fuelBurnGPH: (burn ?? 0) > 0 ? burn : nil
+            fuelBurnGPH: (burn ?? 0) > 0 ? burn : nil,
+            date: departureDate
         ) { midpoint in
             guard let nearest = located.min(by: { a, b in
                 Self.roughDistance(a.0, midpoint) < Self.roughDistance(b.0, midpoint)
@@ -132,6 +146,20 @@ struct NavLogView: View {
         return dLat * dLat + dLon * dLon
     }
 
+    /// Magnetic courses are only as good as the model behind them, and the
+    /// model has a fitted window. Outside it the numbers still render, so they
+    /// have to be labelled or they read as current.
+    static func magneticModelWarning(_ validity: WorldMagneticModel.Validity) -> String? {
+        switch validity {
+        case .valid:
+            nil
+        case .expired:
+            "Magnetic variation comes from an expired World Magnetic Model. Update FlightBag before relying on these magnetic courses."
+        case .beforeModel:
+            "This departure date precedes the World Magnetic Model FlightBag ships, so the magnetic courses are extrapolated backwards."
+        }
+    }
+
     private static func hhmm(_ seconds: Double) -> String {
         let minutes = Int((seconds / 60).rounded())
         return String(format: "%d:%02d", minutes / 60, minutes % 60)
@@ -151,8 +179,17 @@ private struct NavLogLegRow: View {
                     .foregroundStyle(.secondary)
                 Text(leg.to.identifier)
                 Spacer()
-                Text("\(Int(leg.courseTrue.rounded()))°T")
-                    .foregroundStyle(.secondary)
+                // The three numbers are one thought — true, variation applied,
+                // magnetic flown — so they sit together rather than with the
+                // stats below, which also keeps that row from overflowing.
+                // Magnetic leads because it is what gets flown; true stays
+                // visible to cross-check against a chart.
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text("\(AngleFormat.course(leg.courseMagnetic))°M")
+                    Text("\(AngleFormat.course(leg.courseTrue))°T · \(AngleFormat.variation(leg.magneticVariation))")
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                }
             }
             .font(.callout.monospaced().bold())
 

@@ -102,4 +102,43 @@ import Testing
         let decoded = try JSONDecoder().decode(UnitPreferences.self, from: JSONEncoder().encode(prefs))
         #expect(decoded == prefs)
     }
+
+    // MARK: - Runway dimensions
+
+    /// Runway length does not follow altitude. Under ICAO conventions a pilot
+    /// flies feet and reads runways in metres, and rendering EGLL's 09L/27R as
+    /// "12,799 ft" produces a figure no British chart or ATIS will confirm.
+    @Test func runwayLengthIsMetricUnderICAOEvenThoughAltitudeIsNot() {
+        #expect(UnitPreferences.icao.altitude == .feet)
+        #expect(UnitPreferences.icao.runwayLength == .metres)
+        // EGLL 09L/27R. The UK AIP publishes 3902 m; OurAirports stores the
+        // feet it converted that to, so converting back lands a metre short.
+        // The round-trip loss is inherent to storing feet and is the reason
+        // this asserts 3,901 rather than the published figure.
+        #expect(UnitPreferences.icao.formatRunwayLength(feet: 12_799) == "3,901 m")
+        #expect(UnitPreferences.faa.formatRunwayLength(feet: 12_799) == "12,799 ft")
+    }
+
+    /// Canada is the case that rules out deriving runway units from the
+    /// altimeter setting: inHg like the US, and runways in feet to match.
+    @Test func canadaPublishesRunwaysInFeet() {
+        let canada = Jurisdiction.forCountry("CA").units
+        #expect(canada.altimeter == .inchesOfMercury)
+        #expect(canada.runwayLength == .feet)
+        #expect(canada.formatRunwayLength(feet: 11_000) == "11,000 ft")
+    }
+
+    @Test func metricStatesUseMetresForRunways() {
+        let china = Jurisdiction.forCountry("CN").units
+        #expect(china.runwayLength == .metres)
+        #expect(china.formatRunwayLength(feet: 12_467) == "3,800 m")
+    }
+
+    /// Preferences written before `runwayLength` existed must still decode,
+    /// and must land on feet rather than throwing.
+    @Test func decodesPreferencesWrittenBeforeRunwayLengthExisted() throws {
+        let legacy = Data(#"{"altimeter":"hectopascals","distance":"nauticalMiles","visibility":"metres","altitude":"feet","speed":"knots","showsFahrenheit":false}"#.utf8)
+        let decoded = try JSONDecoder().decode(UnitPreferences.self, from: legacy)
+        #expect(decoded.runwayLength == .feet)
+    }
 }

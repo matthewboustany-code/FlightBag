@@ -105,6 +105,7 @@ cron, and troubleshooting, see [Server/DEPLOY.md](Server/DEPLOY.md).
 |---|---|---|
 | Airports, runways, frequencies, navaids | Worldwide (~72 000 aerodromes) | FAA NASR for the US; [OurAirports](https://ourairports.com/data/) (public domain) elsewhere |
 | METAR / TAF | Worldwide | aviationweather.gov |
+| Magnetic variation | Worldwide | NOAA World Magnetic Model (WMM2025, valid through 2030). NASR's published value wins for US airports; everywhere else it is computed, since OurAirports publishes none |
 | Charts, approach plates, coded procedures (SID/STAR), airways | **US only** | FAA d-TPP / CIFP / aeronav |
 | TFRs, winds aloft, FIS-B uplink weather | **US only** | No equivalent free service exists elsewhere. 1090ES ADS-B traffic still works worldwide — only the uplink is US-specific. |
 

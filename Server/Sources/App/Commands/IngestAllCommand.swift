@@ -237,6 +237,19 @@ struct IngestAllCommand: AsyncCommand {
         let builder = try AeroDatabaseBuilder(path: temp.path)
         try builder.setMeta(cycle: cycle)
         try await NASRIngestor(workDirectory: workDir) { console.info($0) }.run(cycle: cycle, into: builder)
+
+        // Worldwide thin coverage, matching what `ingest-nasr` does. Without
+        // this the scheduled pipeline publishes a US-only database, so the
+        // ~66 000 non-US aerodromes exist only in databases someone built by
+        // hand. Must run after NASR — `coveredCountries` reads the rows NASR
+        // wrote to know which countries to leave alone — and before
+        // `buildIndexes`, which is what makes any of it searchable.
+        if Environment.get("FLIGHTBAG_GLOBAL_AIRPORTS") != "0" {
+            try await OurAirportsIngestor(workDirectory: workDir) { console.info($0) }.run(into: builder)
+        } else {
+            console.info("FLIGHTBAG_GLOBAL_AIRPORTS=0 — skipping worldwide airports")
+        }
+
         try builder.buildIndexes()
         try await DTPPIngestor(workDirectory: workDir) { console.info($0) }.run(cycle: cycle, into: builder)
         try await CIFPIngestor(workDirectory: workDir) { console.info($0) }.run(cycle: cycle, into: builder)

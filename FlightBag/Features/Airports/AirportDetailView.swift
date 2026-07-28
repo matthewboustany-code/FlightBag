@@ -90,9 +90,7 @@ struct AirportDetailView: View {
             if let tpa = detail.trafficPatternAltitude {
                 LabeledContent("Pattern Altitude", value: "\(units(for: detail).formatAltitude(feet: tpa)) MSL")
             }
-            if let magVar = detail.airport.magneticVariation {
-                LabeledContent("Magnetic Variation", value: String(format: "%.0f°%@", abs(magVar), magVar >= 0 ? "E" : "W"))
-            }
+            magneticVariationRow(detail)
             LabeledContent("Coordinates") {
                 Text(String(format: "%.4f, %.4f", detail.airport.coordinate.latitude, detail.airport.coordinate.longitude))
                     .monospaced()
@@ -100,6 +98,36 @@ struct AirportDetailView: View {
             if detail.facilityUse == "PR" {
                 Label("Private facility — prior permission required", systemImage: "lock")
                     .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    /// Magnetic variation, published where NASR has it and computed from the
+    /// World Magnetic Model everywhere else.
+    ///
+    /// The published figure wins when present: it is what the state charted
+    /// the runways against, so preferring a computed value would put this row
+    /// at odds with the runway headings just below it. Outside the US no
+    /// published figure exists — OurAirports carries none — and before the
+    /// model this row simply disappeared, which read as "this airport has no
+    /// variation" rather than "we don't have it".
+    @ViewBuilder
+    private func magneticVariationRow(_ detail: AeroDatabase.AirportDetail) -> some View {
+        if let published = detail.airport.magneticVariation {
+            LabeledContent("Magnetic Variation", value: AngleFormat.variation(published))
+        } else {
+            let result = WorldMagneticModel.wmm2025.field(
+                at: detail.airport.coordinate,
+                on: Date(),
+                altitudeFeet: Double(detail.airport.elevationFeet ?? 0)
+            )
+            LabeledContent("Magnetic Variation") {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(AngleFormat.variation(result.field.declination))
+                    Text(result.validity == .valid ? "Computed (WMM)" : "Computed (WMM, expired)")
+                        .font(.caption2)
+                        .foregroundStyle(result.validity == .valid ? Color.secondary : Color.orange)
+                }
             }
         }
     }

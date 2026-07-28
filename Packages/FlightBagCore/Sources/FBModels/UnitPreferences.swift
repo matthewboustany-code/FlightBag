@@ -69,6 +69,26 @@ public struct UnitPreferences: Codable, Sendable, Hashable {
         }
     }
 
+    /// Runway length and width, which do **not** follow `Altitude`.
+    ///
+    /// The two look interchangeable and are not: outside North America a state
+    /// flies altitudes in feet while publishing runway dimensions in metres —
+    /// Heathrow's 09L/27R is 3902 m in the UK AIP, and rendering it as
+    /// "12,799 ft" is a number no British chart, plate or ATIS will ever
+    /// confirm. Canada is the reverse case that rules out keying off the
+    /// altimeter setting: inHg, but runways in feet.
+    public enum RunwayLength: String, Codable, Sendable, CaseIterable {
+        case feet
+        case metres
+
+        public var symbol: String {
+            switch self {
+            case .feet: "ft"
+            case .metres: "m"
+            }
+        }
+    }
+
     /// Governs *aircraft* speeds — navlog TAS and groundspeed. Reported
     /// surface wind is always shown in knots, the ICAO reporting unit
     /// worldwide; a preference has no business rewriting an observation.
@@ -88,6 +108,7 @@ public struct UnitPreferences: Codable, Sendable, Hashable {
     public var distance: Distance
     public var visibility: Visibility
     public var altitude: Altitude
+    public var runwayLength: RunwayLength
     public var speed: Speed
     /// Aviation temperature is Celsius everywhere; US pilots conventionally
     /// see a Fahrenheit gloss alongside it. Explicit rather than inferred from
@@ -99,6 +120,7 @@ public struct UnitPreferences: Codable, Sendable, Hashable {
         distance: Distance = .nauticalMiles,
         visibility: Visibility = .statuteMiles,
         altitude: Altitude = .feet,
+        runwayLength: RunwayLength = .feet,
         speed: Speed = .knots,
         showsFahrenheit: Bool = false
     ) {
@@ -106,6 +128,7 @@ public struct UnitPreferences: Codable, Sendable, Hashable {
         self.distance = distance
         self.visibility = visibility
         self.altitude = altitude
+        self.runwayLength = runwayLength
         self.speed = speed
         self.showsFahrenheit = showsFahrenheit
     }
@@ -118,6 +141,7 @@ public struct UnitPreferences: Codable, Sendable, Hashable {
         distance = try container.decodeIfPresent(Distance.self, forKey: .distance) ?? .nauticalMiles
         visibility = try container.decodeIfPresent(Visibility.self, forKey: .visibility) ?? .statuteMiles
         altitude = try container.decodeIfPresent(Altitude.self, forKey: .altitude) ?? .feet
+        runwayLength = try container.decodeIfPresent(RunwayLength.self, forKey: .runwayLength) ?? .feet
         speed = try container.decodeIfPresent(Speed.self, forKey: .speed) ?? .knots
         showsFahrenheit = try container.decodeIfPresent(Bool.self, forKey: .showsFahrenheit) ?? false
     }
@@ -130,17 +154,20 @@ public struct UnitPreferences: Codable, Sendable, Hashable {
         distance: .nauticalMiles,
         visibility: .statuteMiles,
         altitude: .feet,
+        runwayLength: .feet,
         speed: .knots,
         showsFahrenheit: true
     )
 
     /// The common ICAO convention outside North America: hectopascals and
-    /// metre/kilometre visibility, but still feet and knots.
+    /// metre/kilometre visibility, feet and knots in the air — but runways on
+    /// the ground in metres, which is how the AIPs publish them.
     public static let icao = UnitPreferences(
         altimeter: .hectopascals,
         distance: .nauticalMiles,
         visibility: .metres,
         altitude: .feet,
+        runwayLength: .metres,
         speed: .knots
     )
 
@@ -150,6 +177,7 @@ public struct UnitPreferences: Codable, Sendable, Hashable {
         distance: .kilometres,
         visibility: .metres,
         altitude: .metres,
+        runwayLength: .metres,
         speed: .kilometresPerHour
     )
 
@@ -259,8 +287,21 @@ public struct UnitPreferences: Codable, Sendable, Hashable {
 
     /// Runway and field dimensions, which are published in feet by the FAA and
     /// OurAirports alike but read in metres almost everywhere else.
+    /// Runway length or width. Whole units either way — no aerodrome publishes
+    /// a fractional runway.
+    ///
+    /// Storage is feet, so a metric render is a round trip through the
+    /// conversion the source already made and can land a metre off the
+    /// published figure (EGLL 09L/27R reads 3901 m against the AIP's 3902).
+    /// Displaying metres is still the right call: a metre of rounding is
+    /// invisible next to being handed a unit the local charts never use.
     public func formatRunwayLength(feet: Double) -> String {
-        formatAltitude(feet: feet)
+        switch runwayLength {
+        case .feet:
+            return "\(Self.grouped(Int(feet.rounded()))) \(runwayLength.symbol)"
+        case .metres:
+            return "\(Self.grouped(Int((feet * Self.metresPerFoot).rounded()))) \(runwayLength.symbol)"
+        }
     }
 
     /// US visibility is spoken in fractions ("1 1/2", "1/2"), not decimals.

@@ -318,6 +318,91 @@ import FBModels
         #expect(wind.totalEteSeconds! > still.totalEteSeconds!)
     }
 
+    // MARK: - Magnetic course
+
+    /// 1 June 2026, so the variation figures below are pinned to a date rather
+    /// than drifting with the clock and quietly loosening the test.
+    private var fixedDate: Date {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(secondsFromGMT: 0)!
+        return utc.date(from: DateComponents(year: 2026, month: 6, day: 1))!
+    }
+
+    @Test func magneticCourseAppliesVariationAtTheLegStart() throws {
+        let log = NavLogBuilder.build(route: route(), date: fixedDate)
+        let leg = try #require(log.legs.first)
+
+        let expected = WorldMagneticModel.wmm2025.declination(
+            at: leg.from.coordinate,
+            on: fixedDate
+        )
+        #expect(abs(leg.magneticVariation - expected) < 1e-9)
+        #expect(abs(leg.courseMagnetic - (leg.courseTrue - expected)) < 1e-9)
+        // Central Texas is a few degrees east in this era.
+        #expect(leg.magneticVariation > 1 && leg.magneticVariation < 6)
+    }
+
+    /// The regression this exists for: before the model, variation came from
+    /// the airport record, which is nil for every aerodrome OurAirports
+    /// supplies — so a European navlog had no magnetic course at all.
+    @Test func magneticCourseIsAvailableOutsideTheUS() throws {
+        func wp(_ id: String, _ lat: Double, _ lon: Double) -> ResolvedWaypoint {
+            ResolvedWaypoint(identifier: id, coordinate: Coordinate(latitude: lat, longitude: lon), kind: .fix)
+        }
+        let frankfurtToParis = ParsedRoute(elements: [
+            .waypoint(wp("EDDF", 50.0333, 8.5706)),
+            .waypoint(wp("LFPG", 49.0097, 2.5479)),
+        ])
+
+        let log = NavLogBuilder.build(route: frankfurtToParis, date: fixedDate)
+        let leg = try #require(log.legs.first)
+        #expect(log.magneticModelValidity == .valid)
+        // Central Europe runs a little east of true in this era.
+        #expect(leg.magneticVariation > 0 && leg.magneticVariation < 5)
+        #expect(leg.courseMagnetic != leg.courseTrue)
+        #expect(leg.courseMagnetic >= 0 && leg.courseMagnetic < 360)
+    }
+
+    /// Variation is a field, not an airport property. Taking the departure
+    /// aerodrome's value for the whole route — the obvious shortcut — would be
+    /// degrees wrong by the far end of a long one.
+    @Test func variationIsComputedPerLegNotOncePerRoute() throws {
+        func wp(_ id: String, _ lat: Double, _ lon: Double) -> ResolvedWaypoint {
+            ResolvedWaypoint(identifier: id, coordinate: Coordinate(latitude: lat, longitude: lon), kind: .fix)
+        }
+        let transatlantic = ParsedRoute(elements: [
+            .waypoint(wp("KJFK", 40.6398, -73.7789)),
+            .waypoint(wp("EGLL", 51.4775, -0.4614)),
+            .waypoint(wp("EDDF", 50.0333, 8.5706)),
+        ])
+
+        let log = NavLogBuilder.build(route: transatlantic, date: fixedDate)
+        #expect(log.legs.count == 2)
+        // New York sits ~12° west of true, London ~1° east.
+        #expect(log.legs[0].magneticVariation < -8)
+        #expect(log.legs[1].magneticVariation > 0)
+        let spread = abs(log.legs[0].magneticVariation - log.legs[1].magneticVariation)
+        #expect(spread > 10, "variation should swing across the Atlantic, got \(spread)°")
+    }
+
+    @Test func expiredMagneticModelIsFlaggedOnTheLog() {
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = TimeZone(secondsFromGMT: 0)!
+        let pastExpiry = utc.date(from: DateComponents(year: 2031, month: 1, day: 1))!
+
+        let log = NavLogBuilder.build(route: route(), date: pastExpiry)
+        #expect(log.magneticModelValidity == .expired)
+        // Still computed — a stale variation beats none, provided it is labelled.
+        #expect(log.legs.allSatisfy { $0.courseMagnetic.isFinite })
+    }
+
+    @Test func magneticCourseWrapsThroughNorth() {
+        #expect(abs(NavMath.magneticCourse(trueCourse: 5, variation: 10) - 355) < 1e-9)
+        #expect(abs(NavMath.magneticCourse(trueCourse: 355, variation: -10) - 5) < 1e-9)
+        #expect(abs(NavMath.magneticCourse(trueCourse: 90, variation: 10) - 80) < 1e-9)
+        #expect(abs(NavMath.magneticCourse(trueCourse: 0, variation: 0) - 0) < 1e-9)
+    }
+
     @Test func parsesLatLonWaypoints() {
         let wholeDegrees = RouteParser.parseLatLon("46N078W")
         #expect(wholeDegrees == Coordinate(latitude: 46, longitude: -78))

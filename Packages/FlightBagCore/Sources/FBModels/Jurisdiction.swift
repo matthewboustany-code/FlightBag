@@ -25,6 +25,9 @@ public enum RuleSet: String, Codable, Sendable, CaseIterable, Hashable {
             distance: .nauticalMiles,
             visibility: .statuteMiles,
             altitude: .feet,
+            // The CFS publishes runway dimensions in feet, so Canada follows
+            // the US here even though it is metric in most other respects.
+            runwayLength: .feet,
             speed: .knots
         )
         case .easa, .icao: .icao
