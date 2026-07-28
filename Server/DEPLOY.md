@@ -6,11 +6,25 @@ production pipeline (`ingest-all`). Everything is orchestrated by
 [docker-compose.yml](docker-compose.yml) and configured through a `.env`
 file — see [.env.example](.env.example).
 
-Status: the stack was authored and macOS-verified 2026-07 but **has not yet
-had a real Docker build or GDAL run** (no container runtime on the dev Mac).
-Expect the first `docker compose build` on the NAS to be the shakedown for
-the Linux build; `Sources/App/Ingest/*` already carries the
-`FoundationNetworking` guards Linux needs.
+Status: the stack was authored and macOS-verified (through 2026-07, including
+a full `ingest-all` run producing a schema-5 database plus open flightmaps
+charts) but **has not yet had a real Docker build or GDAL run** — there is no
+container runtime on the dev Mac. Expect the first `docker compose build` on
+the NAS to be the shakedown for the Linux build.
+
+What that first build is most likely to catch, in rough order:
+
+1. **Linux Foundation gaps.** Every file under `Sources/App/Ingest/` carries
+   the `#if canImport(FoundationNetworking)` guard, and all downloads go
+   through `URLSession.data(for:)` rather than the async `download(from:)`
+   family, whose swift-corelibs coverage is thinner. Both are deliberate; keep
+   new ingestors to the same pattern.
+2. **GDAL.** The tile pipeline shells out to `gdal_translate`/`gdalwarp`/
+   `gdaladdo` and has only ever run against Homebrew GDAL. Nothing about the
+   chart steps is exercised until `FLIGHTBAG_SECTIONALS` is non-empty, so
+   bring the database up first and add charts second.
+3. **Volume permissions.** The container runs as a non-root `vapor` user; see
+   the `chown` note in step 2 below.
 
 ## Prerequisites
 
@@ -55,7 +69,14 @@ the Linux build; `Sources/App/Ingest/*` already carries the
    docker compose --profile ingest run --rm ingest
    ```
 
-   NASR + d-TPP + CIFP (the airport/procedure database) always run; charts follow your scope.
+   NASR + d-TPP + CIFP + worldwide OurAirports data (the airport/procedure
+   database) always run; charts follow your scope. Expect ~40 MB of
+   `aero.sqlite` and roughly 64 000 airports across 247 countries.
+
+   The database carries a schema version (currently **5**). The app gates
+   features on it and falls back gracefully on older ones, so a NAS still
+   serving an earlier cycle will not break a newer app — but `kind`-based
+   map/search filtering and worldwide coverage need 5 or later.
    A failure mid-run is fine — rerun and it resumes, skipping every artifact
    that already made it into the tree.
 

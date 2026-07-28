@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Vapor
 import FBModels
 
@@ -75,18 +78,24 @@ struct OpenFlightMapsIngestor {
         }
     }
 
+    /// Fetch to memory, then write.
+    ///
+    /// `URLSession.download(from:)` would stream to disk and keep the peak
+    /// lower, but swift-corelibs-foundation's coverage of the async download
+    /// APIs is thinner than of `data(for:)`, and this image has never had a
+    /// Linux build. Every other ingestor here takes the same route, and
+    /// DEPLOY.md's ~2 GB ingest budget already assumes it — the largest FIR is
+    /// ~160 MB, so the headroom is real. Revisit once the NAS build is proven.
     private func download(_ url: URL, to destination: URL) async throws {
         try FileManager.default.createDirectory(
             at: destination.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        let (temp, response) = try await URLSession.shared.download(from: url)
+        let (data, response) = try await URLSession.shared.data(for: URLRequest(url: url))
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            _ = try? FileManager.default.removeItem(at: temp)
             throw Abort(.badGateway, reason: "HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0) for \(url.lastPathComponent)")
         }
-        _ = try? FileManager.default.removeItem(at: destination)
-        try FileManager.default.moveItem(at: temp, to: destination)
+        try data.write(to: destination, options: .atomic)
     }
 
     /// A truncated or error-page download is still a file. Checking the SQLite
