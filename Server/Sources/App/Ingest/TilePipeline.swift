@@ -190,9 +190,74 @@ struct TilePipeline {
         let executable = gdalBinDirectory.map { "\($0)/\(tool)" } ?? tool
         try runIngestProcess(executable, arguments, searchPath: gdalBinDirectory == nil)
     }
+
+    /// Tools the chart pipeline shells out to, in the order it uses them.
+    static let requiredGDALTools = ["gdal_translate", "gdalwarp", "gdaladdo"]
+
+    /// Check GDAL is present and usable before any chart work starts.
+    ///
+    /// Without this the first sign of a missing or broken `gdal-bin` is a
+    /// process-spawn failure partway through `buildChart`, i.e. after a
+    /// multi-hundred-megabyte download has already been paid for. Failing in
+    /// the first second with the package name in the message is worth the one
+    /// extra exec per tool.
+    ///
+    /// Only called when there is chart work to do — a database-only ingest
+    /// must not require GDAL to be installed at all.
+    @discardableResult
+    func preflightGDAL() throws -> String {
+        var version = "unknown"
+        for tool in ["gdalinfo"] + Self.requiredGDALTools {
+            let executable = gdalBinDirectory.map { "\($0)/\(tool)" } ?? tool
+            do {
+                let output = try capturingIngestProcess(
+                    executable, ["--version"], searchPath: gdalBinDirectory == nil
+                )
+                if tool == "gdalinfo" {
+                    version = output.trimmingCharacters(in: .whitespacesAndNewlines)
+                }
+            } catch {
+                throw IngestError("""
+                    GDAL tool "\(tool)" is not usable\(gdalBinDirectory.map { " in \($0)" } ?? " on PATH").
+                    Chart ingestion needs gdal_translate, gdalwarp and gdaladdo.
+                    In the container these come from the `gdal-bin` package; \
+                    locally pass --gdal-bin, or set FLIGHTBAG_SECTIONALS/\
+                    IFR panels to none to build the database only.
+                    Underlying error: \(error)
+                    """)
+            }
+        }
+        return version
+    }
 }
 
 /// Shared external-process helper for ingest pipelines (GDAL, unzip, zip).
+/// Like `runIngestProcess`, but returns stdout — used for version probes.
+@discardableResult
+func capturingIngestProcess(_ executable: String, _ arguments: [String], searchPath: Bool = false) throws -> String {
+    let process = Process()
+    if searchPath {
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = [executable] + arguments
+    } else {
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+    }
+    let stdout = Pipe()
+    let stderr = Pipe()
+    process.standardOutput = stdout
+    process.standardError = stderr
+    try process.run()
+    // Read before waiting: a tool that outran the pipe buffer would deadlock.
+    let output = String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    let errorOutput = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    process.waitUntilExit()
+    guard process.terminationStatus == 0 else {
+        throw IngestError("\(executable) failed (\(process.terminationStatus)): \(errorOutput.prefix(300))")
+    }
+    return output
+}
+
 func runIngestProcess(_ executable: String, _ arguments: [String], searchPath: Bool = false, currentDirectory: URL? = nil) throws {
     let process = Process()
     if searchPath {

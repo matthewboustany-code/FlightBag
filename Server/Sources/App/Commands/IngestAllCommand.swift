@@ -284,6 +284,13 @@ struct IngestAllCommand: AsyncCommand {
         sources += scope.ifrLowPanels.map { .enrouteLow(panel: $0) }
         sources += scope.ifrHighPanels.map { .enrouteHigh(panel: $0) }
 
+        // Fail now rather than after a several-hundred-megabyte chart
+        // download. Skipped entirely when no charts are in scope, so a
+        // database-only deployment never needs GDAL installed.
+        if !sources.isEmpty {
+            console.info("GDAL: \(try pipeline.preflightGDAL())")
+        }
+
         for source in sources {
             // Enroute editions may belong to the prior cycle (56-day cadence);
             // check both candidate homes before paying for a network probe.

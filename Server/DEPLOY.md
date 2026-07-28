@@ -19,10 +19,27 @@ What that first build is most likely to catch, in rough order:
    through `URLSession.data(for:)` rather than the async `download(from:)`
    family, whose swift-corelibs coverage is thinner. Both are deliberate; keep
    new ingestors to the same pattern.
-2. **GDAL.** The tile pipeline shells out to `gdal_translate`/`gdalwarp`/
-   `gdaladdo` and has only ever run against Homebrew GDAL. Nothing about the
-   chart steps is exercised until `FLIGHTBAG_SECTIONALS` is non-empty, so
-   bring the database up first and add charts second.
+2. **GDAL — the least-proven part of the stack.** The tile pipeline shells
+   out to `gdal_translate`/`gdalwarp`/`gdaladdo`, and GDAL is not installed on
+   the dev machine, so the chart path has never executed anywhere. Every flag
+   it uses is valid in the GDAL 3.8.4 that Ubuntu 24.04 ships, and none is
+   deprecated or newer than 3.8 — version skew is not the risk; the risk is
+   that the chain has never run. `ingest-all` now preflights the tools and
+   logs the version before downloading anything, and skips that check when no
+   charts are in scope. Bring the database up first and add one sectional
+   second, so the first chart failure costs one download rather than fifty.
+
+   The one step worth eyeballing on the first successful sectional is band
+   count. `-expand rgba` yields 4 bands, and `gdalwarp -dstalpha` should treat
+   the existing alpha as source alpha rather than adding a fifth — the MBTILES
+   driver accepts only 1, 2, 3 or 4 bands and will refuse 5. Confirm with:
+
+   ```sh
+   gdalinfo <workdir>/<chart>_<cycle>/mercator.tif | grep -c '^Band '
+   ```
+
+   4 is correct. If it reports 5, drop `-dstalpha` from the `gdalwarp` call in
+   `TilePipeline.buildChart` — the alpha from `-expand rgba` is already there.
 3. **Volume permissions.** The container runs as a non-root `vapor` user; see
    the `chown` note in step 2 below.
 
