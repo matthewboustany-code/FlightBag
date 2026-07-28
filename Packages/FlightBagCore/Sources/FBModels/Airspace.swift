@@ -9,6 +9,12 @@ public struct Airspace: Codable, Sendable, Hashable, Identifiable {
         case restricted
         case prohibited
         case warning
+        /// ICAO Danger Area. Kept distinct from `.warning` rather than folded
+        /// into it: the US uses Warning Areas over international waters, while
+        /// most of the world publishes Danger Areas, and a pilot reading
+        /// "Warning" on a European chart symbol would be reading the wrong
+        /// designation.
+        case danger
 
         public var displayName: String {
             switch self {
@@ -18,6 +24,7 @@ public struct Airspace: Codable, Sendable, Hashable, Identifiable {
             case .restricted: "Restricted"
             case .prohibited: "Prohibited"
             case .warning: "Warning"
+            case .danger: "Danger"
             }
         }
     }

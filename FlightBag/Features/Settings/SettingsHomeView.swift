@@ -6,6 +6,7 @@ struct SettingsHomeView: View {
     @AppStorage("adsbEnabled") private var adsbEnabled = true
     @AppStorage(ServerConfig.defaultsKey) private var serverBaseURL = ""
     @AppStorage(UnitSystemPreference.defaultsKey) private var unitSystem = UnitSystemPreference.automatic.rawValue
+    @AppStorage("openAIPKey") private var openAIPKey = ""
     @Environment(AppEnvironment.self) private var environment
 
     var body: some View {
@@ -28,6 +29,18 @@ struct SettingsHomeView: View {
                     Text("Download Server")
                 } footer: {
                     Text("Where chart-region downloads come from. Leave empty until a FlightBag data server is available.")
+                }
+                Section {
+                    SecureField("openAIP API key", text: $openAIPKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("settings.openAIPKey")
+                } header: {
+                    Text("Worldwide Airspace")
+                } footer: {
+                    Text("Airspace outside the US comes from openAIP, which needs a free key from your openAIP profile. "
+                        + "Their data is licensed for non-commercial use and requires attribution. "
+                        + "Without a key, airspace is shown for US airspace only.")
                 }
                 Section("Legal") {
                     Button("Review Advisory-Use Disclaimer") {

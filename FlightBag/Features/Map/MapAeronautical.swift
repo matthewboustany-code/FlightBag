@@ -130,13 +130,14 @@ extension Airspace.Category {
         case .restricted: .systemRed
         case .prohibited: .systemRed
         case .warning: .systemOrange
+        case .danger: .systemOrange
         }
     }
 
     /// Class D and SUA boundaries draw dashed, matching chart style.
     var isDashed: Bool {
         switch self {
-        case .classD, .restricted, .warning: true
+        case .classD, .restricted, .warning, .danger: true
         case .classB, .classC, .prohibited: false
         }
     }

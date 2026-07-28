@@ -20,6 +20,58 @@ import FBModels
         #expect(advisories.contains { $0.hazard == "CONVECTIVE" && $0.kind == .sigmet })
     }
 
+    /// Captured from the live `isigmet` product. The international feed has a
+    /// different shape from the domestic one — no `airSigmetType`, FIR instead
+    /// of station, plain `base`/`top` instead of `altitudeLow1`/`altitudeHi1`.
+    @Test func decodesRealInternationalSigmets() async throws {
+        let provider = AviationWeatherGovProvider(http: FixtureHTTPClient(data: try fixture("isigmet", "json")))
+        let advisories = try await provider.internationalSigmets()
+        #expect(advisories.count == 3)
+        for advisory in advisories {
+            #expect(advisory.polygon.count >= 3)
+            #expect(advisory.validTo > advisory.validFrom)
+            // The international product carries only SIGMETs.
+            #expect(advisory.kind == .sigmet)
+        }
+    }
+
+    /// Altitudes must survive: decoding this feed with the domestic model
+    /// would silently drop every one, since the field names differ.
+    @Test func internationalSigmetsKeepTheirAltitudes() async throws {
+        let provider = AviationWeatherGovProvider(http: FixtureHTTPClient(data: try fixture("isigmet", "json")))
+        let advisories = try await provider.internationalSigmets()
+
+        let volcanic = try #require(advisories.first { $0.hazard.contains("VA") })
+        #expect(volcanic.altitudeLowFt == 0)
+        #expect(volcanic.altitudeHiFt == 9000)
+
+        // A missing base is unbounded, not zero — AltitudeBand treats nil as
+        // "never hide", which is the safe direction.
+        let thunderstorms = try #require(advisories.first { $0.hazard.contains("TS") })
+        #expect(thunderstorms.altitudeLowFt == nil)
+        #expect(thunderstorms.altitudeHiFt == 50_000)
+    }
+
+    /// "EMBD TS" (embedded — invisible on radar until you're in it) is a
+    /// materially different brief from plain "TS", so the qualifier is kept.
+    @Test func internationalSigmetsRetainTheirQualifiers() async throws {
+        let provider = AviationWeatherGovProvider(http: FixtureHTTPClient(data: try fixture("isigmet", "json")))
+        let advisories = try await provider.internationalSigmets()
+
+        #expect(advisories.contains { $0.hazard == "EMBD TS" })
+        #expect(advisories.contains { $0.hazard == "SEV TURB" })
+        // Volcanic ash carries the volcano name in the same field.
+        #expect(advisories.contains { $0.hazard == "LEWOTOBI VA" })
+    }
+
+    @Test func internationalSigmetIdsAreDistinctPerAdvisory() async throws {
+        let provider = AviationWeatherGovProvider(http: FixtureHTTPClient(data: try fixture("isigmet", "json")))
+        let advisories = try await provider.internationalSigmets()
+        // The store merges domestic and international on id; collisions there
+        // would silently drop hazards.
+        #expect(Set(advisories.map(\.id)).count == advisories.count)
+    }
+
     @Test func decodesRealGAirmets() async throws {
         let provider = AviationWeatherGovProvider(http: FixtureHTTPClient(data: try fixture("gairmet", "json")))
         let airmets = try await provider.graphicalAirmets()
