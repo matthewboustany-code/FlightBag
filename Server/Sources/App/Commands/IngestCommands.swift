@@ -58,6 +58,44 @@ struct IngestNASRCommand: AsyncCommand {
 
         let ingestor = NASRIngestor(workDirectory: workDir) { console.info($0) }
         try await ingestor.run(cycle: cycle, into: builder)
+
+        // Worldwide thin coverage on top of NASR. NASR stays authoritative for
+        // the US; OurAirports fills in everywhere else. Opt out with
+        // FLIGHTBAG_GLOBAL_AIRPORTS=0 to build a US-only database.
+        if Environment.get("FLIGHTBAG_GLOBAL_AIRPORTS") != "0" {
+            let global = OurAirportsIngestor(workDirectory: workDir) { console.info($0) }
+            try await global.run(into: builder)
+        } else {
+            console.info("FLIGHTBAG_GLOBAL_AIRPORTS=0 — skipping worldwide airports")
+        }
+
+        try builder.buildIndexes()
+        try builder.vacuum()
+        console.success("aero.sqlite written to \(output)")
+    }
+}
+
+/// Worldwide airports/navaids alone, for topping up a database that already
+/// has its US data, or building a global-only one.
+struct IngestOurAirportsCommand: AsyncCommand {
+    typealias Signature = IngestSignature
+
+    var help: String {
+        "Add worldwide OurAirports airport/runway/frequency/navaid data to an existing aero.sqlite"
+    }
+
+    func run(using context: CommandContext, signature: IngestSignature) async throws {
+        let cycle = try signature.resolveCycle()
+        let workDir = try signature.resolveWorkDirectory()
+        let output = try signature.resolveOutput()
+        let console = context.console
+
+        console.info("OurAirports ingestion for cycle \(cycle.id) → \(output)")
+        let builder = try AeroDatabaseBuilder(path: output)
+        try builder.setMeta(cycle: cycle)
+
+        let ingestor = OurAirportsIngestor(workDirectory: workDir) { console.info($0) }
+        try await ingestor.run(into: builder)
         try builder.buildIndexes()
         try builder.vacuum()
         console.success("aero.sqlite written to \(output)")

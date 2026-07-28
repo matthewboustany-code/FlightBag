@@ -5,12 +5,24 @@ import FBModels
 /// section's "Decoded" mode. METARs decode from the already-parsed `Metar`
 /// fields; TAFs are tokenized from raw text (group by group), so decoding
 /// works offline on FIS-B uplinked text too.
+///
+/// Both US and ICAO report conventions are handled. The two differ in the raw
+/// text — statute-mile visibility ("P6SM", "1/2SM") versus 4-digit metres
+/// ("9999", "3000"), `A2992` versus `Q1013`, plus ICAO-only tokens like CAVOK
+/// and NSW — while `units` independently controls how the decoded values are
+/// *displayed*. A pilot can read a European TAF in statute miles, or a US one
+/// in metres; parsing and presentation are separate concerns.
 enum WeatherDecoder {
     // MARK: METAR
 
-    static func decode(_ metar: Metar) -> [String] {
+    static func decode(_ metar: Metar, units: UnitPreferences = .faa) -> [String] {
         var lines: [String] = []
 
+        // Wind stays in knots regardless of preference: knots is the ICAO
+        // reporting unit for surface wind worldwide. The `speed` preference
+        // governs aircraft speeds (navlog TAS/groundspeed), not what the
+        // observation said. Reports in metres per second are normalised to
+        // knots on the way in, which is a unit fix, not a preference.
         if let direction = metar.windDirectionDegrees, let speed = metar.windSpeedKt {
             var wind = "Wind from \(String(format: "%03d", direction))° true at \(speed) kt"
             if let gust = metar.windGustKt { wind += ", gusting \(gust) kt" }
@@ -22,7 +34,10 @@ enum WeatherDecoder {
         }
 
         if let visibility = metar.visibilitySM {
-            lines.append("Visibility \(formatVisibility(visibility))\(metar.visibilityIsAtLeast ? " or more" : "") statute miles")
+            // Prose rather than "≥" here: this is the plain-English pane. The
+            // compact badge in WeatherSection uses the symbol form instead.
+            let text = units.formatVisibility(statuteMiles: visibility)
+            lines.append("Visibility \(text)\(metar.visibilityIsAtLeast ? " or more" : "")")
         }
 
         if let weather = metar.presentWeather, !weather.isEmpty {
@@ -32,23 +47,28 @@ enum WeatherDecoder {
         if metar.clouds.isEmpty {
             // Only claim clear sky when the raw text says so; some reports
             // just omit sky condition.
-            if metar.raw.contains("CLR") || metar.raw.contains("SKC") || metar.raw.contains("CAVOK") {
+            if metar.raw.contains("CAVOK") {
+                lines.append("Ceiling and visibility OK")
+            } else if metar.raw.contains("CLR") || metar.raw.contains("SKC") || metar.raw.contains("NSC") {
                 lines.append("Sky clear")
             }
         } else {
-            lines.append(describeClouds(metar.clouds, ceilingFeet: metar.ceilingFeet))
+            lines.append(describeClouds(metar.clouds, ceilingFeet: metar.ceilingFeet, units: units))
         }
 
         if let temperature = metar.temperatureC {
-            var line = "Temperature \(Int(temperature.rounded()))°C (\(Int((temperature * 9 / 5 + 32).rounded()))°F)"
+            var line = "Temperature \(Int(temperature.rounded()))°C"
+            if units.showsFahrenheit {
+                line += " (\(Int((temperature * 9 / 5 + 32).rounded()))°F)"
+            }
             if let dewpoint = metar.dewpointC {
                 line += ", dew point \(Int(dewpoint.rounded()))°C"
             }
             lines.append(line)
         }
 
-        if let altimeter = metar.altimeterInHg {
-            lines.append(String(format: "Altimeter %.2f inHg", altimeter))
+        if let altimeter = metar.altimeterHpa {
+            lines.append("\(units.altimeter.spokenName) \(units.formatAltimeter(hPa: altimeter))")
         }
         return lines
     }
@@ -63,7 +83,7 @@ enum WeatherDecoder {
 
     /// Splits a raw TAF into its forecast groups and decodes each group's
     /// tokens. Unknown tokens are skipped, never guessed at.
-    static func decodeTAF(_ raw: String) -> [TafGroup] {
+    static func decodeTAF(_ raw: String, units: UnitPreferences = .faa) -> [TafGroup] {
         // One report, arbitrary whitespace/newlines → token stream.
         var tokens = raw.split(whereSeparator: \.isWhitespace).map(String.init)
         guard !tokens.isEmpty else { return [] }
@@ -96,7 +116,7 @@ enum WeatherDecoder {
                     index += 1
                 }
                 current = (header, [])
-            } else if let condition = decodeToken(token) {
+            } else if let condition = decodeToken(token, units: units) {
                 current.tokens.append(condition)
             } else if current.header == "Forecast", let period = decodeValidity(token) {
                 current.header = "Valid \(period)"
@@ -117,42 +137,64 @@ enum WeatherDecoder {
     }
 
     /// One TAF condition token → plain English, nil when unrecognized.
-    static func decodeToken(_ token: String) -> String? {
-        // Wind: dddffKT, dddffGffKT, VRBffKT.
-        if token.hasSuffix("KT") {
-            let body = token.dropLast(2)
+    static func decodeToken(_ token: String, units: UnitPreferences = .faa) -> String? {
+        // Wind shear first: WS020/18040KT also ends in "KT", so checking it
+        // after the wind group would let the wind parser claim and reject it.
+        if token.hasPrefix("WS"), token.contains("/") {
+            return "Low-level wind shear reported"
+        }
+        // Wind: dddffKT, dddffGffKT, VRBffKT. ICAO reports may use MPS
+        // (metres per second) instead of knots.
+        for (suffix, toKnots) in [("KT", 1.0), ("MPS", 1.9438444924406)] where token.hasSuffix(suffix) {
+            let body = token.dropLast(suffix.count)
             let parts = body.split(separator: "G")
             let head = parts[0]
-            if head.count >= 5 {
-                let direction = head.prefix(3)
-                let speed = head.dropFirst(3)
-                guard speed.allSatisfy(\.isNumber) else { return nil }
-                var wind: String
-                if direction == "VRB" {
-                    wind = "Wind variable at \(Int(speed) ?? 0) kt"
-                } else if direction.allSatisfy(\.isNumber) {
-                    wind = "Wind \(direction)° at \(Int(speed) ?? 0) kt"
-                } else {
-                    return nil
-                }
-                if parts.count == 2, let gust = Int(parts[1]) { wind += ", gusting \(gust) kt" }
-                return wind
+            guard head.count >= 5 else { return nil }
+            let direction = head.prefix(3)
+            let speed = head.dropFirst(3)
+            guard speed.allSatisfy(\.isNumber), let value = Int(speed) else { return nil }
+            let knots = Int((Double(value) * toKnots).rounded())
+            var wind: String
+            if direction == "VRB" {
+                wind = "Wind variable at \(knots) kt"
+            } else if direction.allSatisfy(\.isNumber) {
+                wind = "Wind \(direction)° at \(knots) kt"
+            } else {
+                return nil
             }
-            return nil
+            if parts.count == 2, let gust = Int(parts[1].filter(\.isNumber)) {
+                wind += ", gusting \(Int((Double(gust) * toKnots).rounded())) kt"
+            }
+            return wind
         }
-        // Visibility: P6SM, 6SM, 1/2SM, 1 1/2SM arrives as "11/2SM".
+        // US visibility: P6SM, 6SM, 1/2SM; "1 1/2SM" arrives as "11/2SM".
         if token.hasSuffix("SM") {
             var body = String(token.dropLast(2))
             let atLeast = body.hasPrefix("P")
             if atLeast { body.removeFirst() }
-            guard body.allSatisfy({ $0.isNumber || $0 == "/" }) else { return nil }
-            let display = body.count == 4 && body.contains("/")
-                ? "\(body.prefix(1)) \(body.dropFirst())"  // "11/2" → "1 1/2"
-                : body
-            return "Visibility \(display)\(atLeast ? " or more" : "") SM"
+            let below = body.hasPrefix("M")
+            if below { body.removeFirst() }
+            guard body.allSatisfy({ $0.isNumber || $0 == "/" }), let miles = statuteMiles(body) else { return nil }
+            let text = units.formatVisibility(statuteMiles: miles)
+            return "Visibility \(below ? "less than " : "")\(text)\(atLeast ? " or more" : "")"
         }
-        // Clouds: FEW/SCT/BKN/OVC + hundreds of feet (+CB/TCU), VV002, SKC/CLR.
-        if token == "SKC" || token == "CLR" || token == "CAVOK" { return "Sky clear" }
+        // ICAO visibility: a bare 4-digit metre group ("9999", "3000", "0800"),
+        // optionally with an NDV suffix. US TAFs never contain a bare 4-digit
+        // token, so this cannot shadow them. 9999 means 10 km or more.
+        if let metres = icaoVisibilityMetres(token) {
+            let text = units.formatVisibility(metres: metres.value)
+            return "Visibility \(text)\(metres.isAtLeast ? " or more" : "")"
+        }
+        // Pressure, when a report carries it: Q1013 (hPa) or A2992 (inHg×100).
+        if let hPa = pressureHpa(token) {
+            return "\(units.altimeter.spokenName) \(units.formatAltimeter(hPa: hPa))"
+        }
+        // Sky condition. CAVOK is not merely "clear" — it asserts visibility
+        // 10 km or more, no cloud below 5000 ft, and no significant weather.
+        if token == "CAVOK" { return "Ceiling and visibility OK" }
+        if token == "SKC" || token == "CLR" || token == "NSC" || token == "NCD" { return "Sky clear" }
+        if token == "NSW" { return "No significant weather" }
+        // Clouds: FEW/SCT/BKN/OVC + hundreds of feet (+CB/TCU), VV002.
         for (prefix, name) in [("FEW", "Few clouds"), ("SCT", "Scattered clouds"), ("BKN", "Broken clouds"), ("OVC", "Overcast"), ("VV", "Sky obscured, vertical visibility")] {
             if token.hasPrefix(prefix) {
                 var body = token.dropFirst(prefix.count)
@@ -160,21 +202,55 @@ enum WeatherDecoder {
                 if body.hasSuffix("CB") { body = body.dropLast(2); suffix = " (cumulonimbus)" }
                 if body.hasSuffix("TCU") { body = body.dropLast(3); suffix = " (towering cumulus)" }
                 guard body.count == 3, body.allSatisfy(\.isNumber), let hundreds = Int(body) else { return nil }
-                return "\(name) at \((hundreds * 100).formatted()) ft\(suffix)"
+                return "\(name) at \(units.formatAltitude(feet: Double(hundreds * 100)))\(suffix)"
             }
-        }
-        // Wind shear: WS020/18040KT.
-        if token.hasPrefix("WS"), token.contains("/") {
-            return "Low-level wind shear reported"
         }
         // Weather phenomena.
         let phenomena = decodePhenomena(token)
         return phenomena == token ? nil : phenomena
     }
 
+    /// "6" → 6, "1/2" → 0.5, "11/2" → 1.5 (the TAF spelling of "1 1/2").
+    private static func statuteMiles(_ body: String) -> Double? {
+        guard !body.isEmpty else { return nil }
+        guard body.contains("/") else { return Double(body) }
+        let parts = body.split(separator: "/")
+        guard parts.count == 2, let denominator = Double(parts[1]), denominator != 0 else { return nil }
+        // A 4-character form like "11/2" is a whole number glued to a fraction.
+        if body.count == 4, parts[0].count == 2,
+           let whole = Double(parts[0].prefix(1)), let numerator = Double(parts[0].suffix(1)) {
+            return whole + numerator / denominator
+        }
+        guard let numerator = Double(parts[0]) else { return nil }
+        return numerator / denominator
+    }
+
+    /// A bare ICAO metre visibility group. Returns nil for anything else, so
+    /// the caller can fall through to the remaining token types.
+    private static func icaoVisibilityMetres(_ token: String) -> (value: Double, isAtLeast: Bool)? {
+        var body = token
+        if body.hasSuffix("NDV") { body = String(body.dropLast(3)) }
+        guard body.count == 4, body.allSatisfy(\.isNumber), let value = Int(body) else { return nil }
+        // 9999 is the coded form of "10 km or more", not a 9,999 m observation.
+        if value == 9999 { return (10_000, true) }
+        return (Double(value), false)
+    }
+
+    /// "Q1013" → 1013 hPa; "A2992" → 29.92 inHg converted to hPa.
+    private static func pressureHpa(_ token: String) -> Double? {
+        guard token.count == 5 else { return nil }
+        let digits = token.dropFirst()
+        guard digits.allSatisfy(\.isNumber), let value = Double(digits) else { return nil }
+        switch token.first {
+        case "Q": return value
+        case "A": return value / 100 * 33.863886666667
+        default: return nil
+        }
+    }
+
     // MARK: Shared pieces
 
-    private static func describeClouds(_ clouds: [CloudLayer], ceilingFeet: Int?) -> String {
+    private static func describeClouds(_ clouds: [CloudLayer], ceilingFeet: Int?, units: UnitPreferences) -> String {
         let parts = clouds.map { layer -> String in
             let name = switch layer.cover {
             case .skc, .clr, .cavok: "clear"
@@ -186,13 +262,9 @@ enum WeatherDecoder {
             }
             guard let base = layer.baseFeetAGL else { return name }
             let ceiling = layer.cover.isCeiling && base == ceilingFeet ? " (ceiling)" : ""
-            return "\(name) at \(base.formatted()) ft\(ceiling)"
+            return "\(name) at \(units.formatAltitude(feet: Double(base)))\(ceiling)"
         }
         return "Clouds: " + parts.joined(separator: ", ")
-    }
-
-    private static func formatVisibility(_ sm: Double) -> String {
-        sm == sm.rounded() ? String(Int(sm)) : sm.formatted()
     }
 
     private static func dayOrdinal(_ day: Substring) -> String {

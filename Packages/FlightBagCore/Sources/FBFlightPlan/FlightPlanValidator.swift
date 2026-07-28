@@ -44,7 +44,16 @@ public struct ValidationIssue: Sendable, Hashable, Identifiable, CustomStringCon
 /// run in the app's form UI and in the backend before anything is transmitted
 /// to a filing provider.
 public enum FlightPlanValidator {
-    public static func validate(_ plan: ICAOFlightPlan) -> [ValidationIssue] {
+    /// Validates against ICAO field formats, which are the same everywhere,
+    /// plus the handful of rules that genuinely differ by state.
+    ///
+    /// `jurisdiction` defaults to whatever the departure aerodrome implies, so
+    /// callers get the right advice without having to know to ask for it.
+    public static func validate(
+        _ plan: ICAOFlightPlan,
+        jurisdiction: Jurisdiction? = nil
+    ) -> [ValidationIssue] {
+        let rules = (jurisdiction ?? .forIdentifier(plan.departure)).ruleSet
         var issues: [ValidationIssue] = []
 
         func error(_ field: ValidationIssue.Field, _ message: String) {
@@ -93,7 +102,17 @@ public enum FlightPlanValidator {
             validateAerodrome(alt2, field: .alternate2, error: { error($0, $1) })
         }
         if plan.flightRules != .vfr && plan.alternate1 == nil {
-            warning(.alternate1, "IFR flight plans usually require an alternate unless 1-2-3 conditions are met.")
+            // The condition under which an alternate may be omitted is a
+            // national rule, not an ICAO one. Naming the US "1-2-3 rule" to a
+            // pilot departing EDDF would be actively wrong.
+            switch rules {
+            case .faa:
+                warning(.alternate1, "IFR flight plans usually require an alternate unless 1-2-3 conditions are met.")
+            case .tcca:
+                warning(.alternate1, "IFR flight plans usually require an alternate; check TC AIM weather minima.")
+            case .easa, .icao, .icaoMetric:
+                warning(.alternate1, "IFR flight plans usually require a destination alternate; check the state's AIP for the exemption criteria.")
+            }
         }
 
         // Item 15 — cruising speed: N#### (knots), K#### (km/h), or M### (Mach).
@@ -103,7 +122,16 @@ public enum FlightPlanValidator {
 
         // Item 15 — level: F### (flight level), A### (altitude in hundreds ft), S/M metric, or VFR.
         if !matches(plan.cruisingLevel, "^(F[0-9]{3}|A[0-9]{3}|S[0-9]{4}|M[0-9]{4}|VFR)$") {
-            error(.cruisingLevel, "Level must be A### (altitude, e.g. A090), F### (flight level), or VFR.")
+            let metricHint = rules == .icaoMetric ? ", S#### (metric level)" : ""
+            error(.cruisingLevel, "Level must be A### (altitude, e.g. A090), F### (flight level)\(metricHint), or VFR.")
+        } else if let transition = rules.fixedTransitionAltitudeFeet,
+                  plan.cruisingLevel.hasPrefix("A"),
+                  let hundreds = Int(plan.cruisingLevel.dropFirst()),
+                  hundreds * 100 >= transition {
+            // Only checkable where the transition altitude is national. Across
+            // most of Europe it varies by aerodrome, so there is nothing to
+            // check against and we stay quiet rather than guess.
+            warning(.cruisingLevel, "At or above \(transition / 100 * 100) ft, use a flight level (F\(hundreds)) rather than an altitude.")
         }
 
         // Item 15 — route.

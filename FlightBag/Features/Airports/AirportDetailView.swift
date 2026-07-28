@@ -8,6 +8,7 @@ struct AirportDetailView: View {
     @Environment(AppEnvironment.self) private var environment
     @State private var detail: AeroDatabase.AirportDetail?
     @State private var loadFailed = false
+    @AppStorage(UnitSystemPreference.defaultsKey) private var unitSystem = UnitSystemPreference.automatic.rawValue
 
     var body: some View {
         Group {
@@ -55,6 +56,14 @@ struct AirportDetailView: View {
         detail.airport.icaoId ?? ICAOIdentifier(detail.airport.id)
     }
 
+    /// Units for the airport on screen, so a European field reads in metres
+    /// even when the pilot's own base is in the US.
+    private func units(for detail: AeroDatabase.AirportDetail) -> UnitPreferences {
+        (UnitSystemPreference(rawValue: unitSystem) ?? .automatic).preferences(
+            for: .forAirport(country: detail.airport.country, identifier: detail.airport.icaoId)
+        )
+    }
+
     private func infoSection(_ detail: AeroDatabase.AirportDetail) -> some View {
         Section {
             VStack(alignment: .leading, spacing: 4) {
@@ -64,10 +73,10 @@ struct AirportDetailView: View {
                     .foregroundStyle(.secondary)
             }
             if let elevation = detail.airport.elevationFeet {
-                LabeledContent("Elevation", value: "\(Int(elevation.rounded())) ft MSL")
+                LabeledContent("Elevation", value: "\(units(for: detail).formatAltitude(feet: elevation)) MSL")
             }
             if let tpa = detail.trafficPatternAltitude {
-                LabeledContent("Pattern Altitude", value: "\(Int(tpa.rounded())) ft MSL")
+                LabeledContent("Pattern Altitude", value: "\(units(for: detail).formatAltitude(feet: tpa)) MSL")
             }
             if let magVar = detail.airport.magneticVariation {
                 LabeledContent("Magnetic Variation", value: String(format: "%.0f°%@", abs(magVar), magVar >= 0 ? "E" : "W"))
@@ -95,7 +104,8 @@ struct AirportDetailView: View {
                             .font(.headline.monospaced())
                         Spacer()
                         if let length = runway.lengthFeet, let width = runway.widthFeet {
-                            Text("\(length)′ × \(width)′")
+                            let prefs = units(for: detail)
+                            Text("\(prefs.formatRunwayLength(feet: Double(length))) × \(prefs.formatRunwayLength(feet: Double(width)))")
                                 .monospacedDigit()
                         }
                     }

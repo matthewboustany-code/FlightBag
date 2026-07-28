@@ -11,6 +11,14 @@ struct WeatherSection: View {
     @State private var isStale = false
     @State private var isLoading = true
     @AppStorage("weatherShowDecoded") private var showDecoded = false
+    @AppStorage(UnitSystemPreference.defaultsKey) private var unitSystem = UnitSystemPreference.automatic.rawValue
+
+    /// Units for the station being displayed, so an airport screen reads in
+    /// local convention even when the pilot is elsewhere.
+    private var units: UnitPreferences {
+        (UnitSystemPreference(rawValue: unitSystem) ?? .automatic)
+            .preferences(for: .forIdentifier(station))
+    }
 
     var body: some View {
         Section {
@@ -22,14 +30,19 @@ struct WeatherSection: View {
             } else if let metar = weather?.metar {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
-                        if let category = metar.flightCategory {
+                        // VFR/MVFR/IFR/LIFR are FAA definitions. Other states
+                        // set their own VMC/IMC minima, so showing the badge
+                        // outside US airspace asserts a threshold that does
+                        // not apply there.
+                        if let category = metar.flightCategory,
+                           Jurisdiction.forIdentifier(station).ruleSet.usesFlightCategories {
                             FlightCategoryBadge(category: category)
                         }
                         Spacer()
                         ageStamp
                     }
                     if showDecoded {
-                        ForEach(WeatherDecoder.decode(metar), id: \.self) { line in
+                        ForEach(WeatherDecoder.decode(metar, units: units), id: \.self) { line in
                             Text(line)
                                 .font(.callout)
                                 .textSelection(.enabled)
@@ -53,7 +66,7 @@ struct WeatherSection: View {
                 if let taf = weather?.taf {
                     DisclosureGroup("TAF") {
                         if showDecoded {
-                            ForEach(WeatherDecoder.decodeTAF(taf.raw), id: \.header) { group in
+                            ForEach(WeatherDecoder.decodeTAF(taf.raw, units: units), id: \.header) { group in
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(group.header)
                                         .font(.callout.weight(.semibold))
@@ -120,13 +133,16 @@ struct WeatherSection: View {
                 Label("VRB @ \(speed) kt", systemImage: "wind")
             }
             if let visibility = metar.visibilitySM {
-                Label("\(visibility.formatted())\(metar.visibilityIsAtLeast ? "+" : "") SM", systemImage: "eye")
+                Label(
+                    units.formatVisibility(statuteMiles: visibility, isAtLeast: metar.visibilityIsAtLeast),
+                    systemImage: "eye"
+                )
             }
             if let temperature = metar.temperatureC {
                 Label("\(Int(temperature.rounded()))°C", systemImage: "thermometer.medium")
             }
-            if let altimeter = metar.altimeterInHg {
-                Label(String(format: "%.2f", altimeter), systemImage: "gauge.with.needle")
+            if let altimeter = metar.altimeterHpa {
+                Label(units.formatAltimeter(hPa: altimeter), systemImage: "gauge.with.needle")
             }
         }
         .font(.caption)

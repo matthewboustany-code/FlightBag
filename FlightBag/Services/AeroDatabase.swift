@@ -462,16 +462,16 @@ extension AeroDatabase: WaypointResolving {
     /// fixes, 4-letter are airports, 1–3 letter are navaids — with fallbacks
     /// so "SAT" (airport and VORTAC) still resolves either way. Ambiguous
     /// identifiers prefer CONUS sites; airway context refines the rest.
-    func resolveWaypoint(identifier: String) async throws -> ResolvedWaypoint? {
+    func resolveWaypoint(identifier: String, near anchor: Coordinate?) async throws -> ResolvedWaypoint? {
         let ident = identifier.uppercased()
         let attempts: [() async throws -> ResolvedWaypoint?]
         switch ident.count {
         case 5:
             attempts = [{ try await self.fix(ident) }, { try await self.airportWaypoint(ident) }]
         case 4:
-            attempts = [{ try await self.airportWaypoint(ident) }, { try await self.fix(ident) }, { try await self.navaid(ident) }]
+            attempts = [{ try await self.airportWaypoint(ident) }, { try await self.fix(ident) }, { try await self.navaid(ident, near: anchor) }]
         default:
-            attempts = [{ try await self.navaid(ident) }, { try await self.airportWaypoint(ident) }, { try await self.fix(ident) }]
+            attempts = [{ try await self.navaid(ident, near: anchor) }, { try await self.airportWaypoint(ident) }, { try await self.fix(ident) }]
         }
         for attempt in attempts {
             if let waypoint = try await attempt() { return waypoint }
@@ -526,17 +526,39 @@ extension AeroDatabase: WaypointResolving {
         }
     }
 
-    private func navaid(_ ident: String) async throws -> ResolvedWaypoint? {
+    /// Navaid identifiers are unique only within a region. Worldwide, about a
+    /// third of them collide — "LON" is London *and* Londrina, "FFM" is
+    /// Frankfurt *and* Fergus Falls — so with an anchor we take the nearest
+    /// candidate, and without one we fall back to the CONUS preference that
+    /// served the US-only database.
+    private func navaid(_ ident: String, near anchor: Coordinate? = nil) async throws -> ResolvedWaypoint? {
         try await dbQueue.read { db in
-            try Row.fetchOne(
-                db,
-                sql: """
+            let sql: String
+            var arguments: StatementArguments = [ident]
+            if let anchor {
+                // Ordering by squared degrees is enough to pick a winner and
+                // avoids trigonometry in SQLite; longitude is cosine-scaled so
+                // the comparison stays sane away from the equator.
+                sql = """
+                SELECT id, name, lat, lon FROM navaid WHERE id = ?
+                ORDER BY (lat - ?) * (lat - ?)
+                       + ((lon - ?) * (lon - ?)) * ?
+                LIMIT 1
+                """
+                let cosLat = cos(anchor.latitude * .pi / 180)
+                arguments += [
+                    anchor.latitude, anchor.latitude,
+                    anchor.longitude, anchor.longitude,
+                    cosLat * cosLat,
+                ]
+            } else {
+                sql = """
                 SELECT id, name, lat, lon FROM navaid WHERE id = ?
                 ORDER BY CASE WHEN (lat > 48 AND lon < -125) OR (lat < 30 AND lon < -150) THEN 1 ELSE 0 END
                 LIMIT 1
-                """,
-                arguments: [ident]
-            ).map { row in
+                """
+            }
+            return try Row.fetchOne(db, sql: sql, arguments: arguments).map { row in
                 ResolvedWaypoint(
                     identifier: row["id"],
                     name: row["name"],

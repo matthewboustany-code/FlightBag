@@ -116,7 +116,7 @@ touch GRDB or providers directly.
 
 Four targets, dependency order `FBModels ← FBFlightPlan / FBProviders`; `FBGDL90` standalone:
 
-- **FBModels** — zero-dep domain types: `Airport`, `Airspace`, `Advisory`, `Weather`, `Coordinate`, `AltitudeBand`, `DataCycle` (AIRAC math), `DataAuthority`, `DownloadManifest`, `PlateMetadata`
+- **FBModels** — zero-dep domain types: `Airport`, `Airspace`, `Advisory`, `Weather`, `Coordinate`, `AltitudeBand`, `DataCycle` (AIRAC math), `DataAuthority` (decodes unknown values to `.unknown` so one unfamiliar authority can't fail a whole manifest), `DownloadManifest`, `PlateMetadata`, `Jurisdiction`/`RuleSet` (ICAO-prefix → country → rules), `UnitPreferences` (display-only conversion; storage stays hPa/SM/ft/NM/kt)
 - **FBFlightPlan** — `ICAOFlightPlan`, `FlightPlanValidator` (same rules client+server — the package's reason to exist), `RouteParser` (needs a `WaypointResolving`), `NavLog`, `NavMath`
 - **FBProviders** — `HTTPGetting` (injected transport) + protocols (`WeatherProvider`, `NotamProvider`, `PlateProvider`, `FilingService`) and FAA impls: `AviationWeatherGovProvider`, `TFRProvider`, `AirspaceProvider`, `WindsAloftProvider`, `AdvisoryProviders`
 - **FBGDL90** — `GDL90Deframer` + `GDL90Message`: pure byte-level ADS-B decoding, no sockets
@@ -135,7 +135,7 @@ package dir) — the XCUITest ban applies only to the app's UI tests.
 ## Server (`Server/`)
 
 - `routes.swift` — `/v1/manifest` (serves `Public/artifacts/manifest.json`, empty fallback) and `/v1/airports/:id/weather` (cached METAR/TAF proxy); JSON wire format is ISO8601 (set in `configure.swift`, which also mounts `FileMiddleware` over `Public/` — range requests included, so background downloads resume)
-- `Commands/IngestCommands.swift` — CLI entry points: `ingest-nasr`, `ingest-dtpp`, `ingest-tiles` (`--set vfr|ifr-low|ifr-high`, `--chart`/`--panel`), `ingest-basemap`, `bundle-plates --region US-XX --db aero.sqlite`, `build-manifest --base-url`
+- `Commands/IngestCommands.swift` — CLI entry points: `ingest-nasr` (which also pulls worldwide OurAirports data unless `FLIGHTBAG_GLOBAL_AIRPORTS=0`), `ingest-ourairports`, `ingest-dtpp`, `ingest-tiles` (`--set vfr|ifr-low|ifr-high`, `--chart`/`--panel`), `ingest-basemap`, `bundle-plates --region US-XX --db aero.sqlite`, `build-manifest --base-url`
 - `Ingest/ARINC424.swift` + `Ingest/CIFPIngestor.swift` — FAA CIFP (ARINC 424) → `procedure`/`procedure_leg` tables (schema v3): fixed-width PD/PE parsing (fixture-tested against real lines), fix index from EA/PC/PG/D/DB records, coordinates resolved at ingest. `ingest-cifp` command (`--input` for manual FAACIFP18); runs inside `ingest-all` after DTPP
 - `Commands/IngestAllCommand.swift` — `ingest-all`: the scheduled-job orchestrator. Picks the target cycle itself (HEAD-probes whether the FAA published the next one), no-ops via a `{cycle}/.complete` marker, skips artifacts that already exist (rerun = resume), runs db → tiles → basemap → plates → manifest, and rebuilds the manifest when the calendar rolls into a pre-built cycle. Scope comes from `FLIGHTBAG_*` env vars (see `Server/.env.example`); the db always builds, charts are opt-in
 - `Ingest/` — `NASRIngestor` (~380 ln, FAA NASR CSV → sqlite), `DTPPIngestor` (plates), `AeroDatabaseBuilder` (builds per-cycle `aero.sqlite`), `TilePipeline` (`Source`: sectional / enroute low+high / Natural Earth basemap → MBTiles; enroute editions are 56-day, get `.expires` sidecars and `resolveEditionCycle`), `PlateBundler` (per-state plate zips, `{airportId}/{pdfName}` layout matching PlateStore), `ManifestBuilder` (artifact tree → manifest: sha256 sidecar cache, next-cycle + carry-forward), `ChartCatalog` (regions + sectional→state fallback table), `RegionBounds` (MBTiles `bounds` ∩ state bboxes → `regionIds`), `CSVTable` (parsing helper)
@@ -155,6 +155,8 @@ package dir) — the XCUITest ban applies only to the app's UI tests.
 | GDL90/FIS-B bit layouts | FBGDL90 / FBFISB targets; drive with `swift run gdl90sim` |
 | Ownship position | `GDL90PositionSource.swift` (`CompositePositionSource` is the one views read) |
 | New data in `aero.sqlite` | `AeroDatabaseBuilder.swift` (server) **and** `AeroDatabase.swift` (app) — schema must match |
+| Units / non-US weather forms | FBModels `UnitPreferences` + `Jurisdiction`, app-side `UnitSettings.swift`, `WeatherDecoding.swift` |
+| Worldwide airport/navaid data | server `OurAirportsIngestor.swift` (NASR stays authoritative for the US; see `coveredCountries`) |
 | Downloads / cycles | FBModels `DataCycle` + `DownloadManifest`/`Region`, `DownloadCenter.swift`, `DownloadsHomeView.swift` |
 | Chart-region downloads end-to-end | server `ManifestBuilder`/`ChartCatalog` → app `ManifestClient` → `DownloadCenter` → `ChartStore` (map picks tiles up via `chartsVersion`) |
 | Deploying / operating the data server | `Server/DEPLOY.md`, then `docker-compose.yml` + `IngestAllCommand.swift` |

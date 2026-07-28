@@ -13,6 +13,14 @@ struct NavLogView: View {
     @State private var navLog: NavLog?
     @State private var windsApplied = false
     @State private var loading = true
+    @AppStorage(UnitSystemPreference.defaultsKey) private var unitSystem = UnitSystemPreference.automatic.rawValue
+
+    /// A route can cross jurisdictions, so there is no single "local"
+    /// convention to follow — the navlog uses the ambient setting.
+    private var units: UnitPreferences {
+        (UnitSystemPreference(rawValue: unitSystem) ?? .automatic)
+            .preferences(for: UnitSystemPreference.deviceJurisdiction)
+    }
 
     var body: some View {
         Group {
@@ -20,7 +28,7 @@ struct NavLogView: View {
                 List {
                     Section {
                         ForEach(navLog.legs) { leg in
-                            NavLogLegRow(leg: leg)
+                            NavLogLegRow(leg: leg, units: units)
                         }
                     } footer: {
                         Label(
@@ -32,7 +40,7 @@ struct NavLogView: View {
                     }
 
                     Section("Totals") {
-                        LabeledContent("Distance", value: "\(Int(navLog.totalDistanceNM.rounded())) NM")
+                        LabeledContent("Distance", value: units.formatDistance(nauticalMiles: navLog.totalDistanceNM))
                         if let ete = navLog.totalEteSeconds {
                             LabeledContent("Time en route", value: Self.hhmm(ete))
                         }
@@ -96,14 +104,25 @@ struct NavLogView: View {
         }
     }
 
-    /// Planned cruising level ("A070" → 7000 ft, "F350" → 35000 ft).
+    /// Planned cruising level → feet.
+    ///
+    /// ICAO item 15 allows metric forms as well as the familiar imperial ones,
+    /// and the validator already accepts them: "S1130"/"M0840" are tens of
+    /// metres (S1130 = 11 300 m). Without this branch a metric-level plan
+    /// returned nil and silently lost its winds-aloft application.
     static func cruiseAltitudeFeet(from planData: Data?) -> Int? {
         guard let plan = FlightPlanCodec.decode(planData) else { return nil }
         let level = plan.cruisingLevel
-        guard level.count == 4, let hundreds = Int(level.dropFirst()) else { return nil }
-        switch level.first {
-        case "A", "F": return hundreds * 100
-        default: return nil
+        guard let prefix = level.first else { return nil }
+        switch prefix {
+        case "A", "F":
+            guard level.count == 4, let hundreds = Int(level.dropFirst()) else { return nil }
+            return hundreds * 100
+        case "S", "M":
+            guard level.count == 5, let tensOfMetres = Int(level.dropFirst()) else { return nil }
+            return Int((Double(tensOfMetres) * 10 / 0.3048).rounded())
+        default:
+            return nil
         }
     }
 
@@ -121,6 +140,7 @@ struct NavLogView: View {
 
 private struct NavLogLegRow: View {
     let leg: NavLogLeg
+    let units: UnitPreferences
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -137,9 +157,9 @@ private struct NavLogLegRow: View {
             .font(.callout.monospaced().bold())
 
             HStack(spacing: 12) {
-                stat("Dist", "\(Int(leg.distanceNM.rounded())) NM")
+                stat("Dist", units.formatDistance(nauticalMiles: leg.distanceNM))
                 if let gs = leg.groundSpeedKt {
-                    stat("GS", "\(Int(gs.rounded())) kt")
+                    stat("GS", units.formatSpeed(knots: gs))
                 }
                 if let ete = leg.eteSeconds {
                     stat("ETE", "\(Int((ete / 60).rounded())) min")

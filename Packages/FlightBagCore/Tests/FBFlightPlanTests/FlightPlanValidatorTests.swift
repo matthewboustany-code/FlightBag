@@ -117,12 +117,99 @@ import FBModels
     }
 }
 
+/// Worldwide data makes navaid identifiers ambiguous — about a third of them
+/// repeat across regions. The parser must give resolvers the positional
+/// context needed to pick correctly.
+@Suite struct AmbiguousIdentifierTests {
+    /// Stands in for a worldwide navaid table: "LON" is both London (UK) and
+    /// Londrina (Brazil), which is a real collision in OurAirports data.
+    struct WorldResolver: WaypointResolving {
+        let candidates: [String: [ResolvedWaypoint]]
+        /// Records what anchor the parser supplied for each lookup.
+        final class Log: @unchecked Sendable {
+            var anchors: [String: Coordinate?] = [:]
+        }
+        let log = Log()
+
+        func resolveWaypoint(identifier: String, near anchor: Coordinate?) async throws -> ResolvedWaypoint? {
+            log.anchors[identifier] = anchor
+            guard let options = candidates[identifier] else { return nil }
+            guard let anchor else { return options.first }
+            return options.min { a, b in
+                squaredDistance(a.coordinate, anchor) < squaredDistance(b.coordinate, anchor)
+            }
+        }
+
+        func isAirway(identifier: String) async throws -> Bool { false }
+
+        private func squaredDistance(_ a: Coordinate, _ b: Coordinate) -> Double {
+            let dLat = a.latitude - b.latitude
+            let dLon = (a.longitude - b.longitude) * cos(b.latitude * .pi / 180)
+            return dLat * dLat + dLon * dLon
+        }
+    }
+
+    private func worldResolver() -> WorldResolver {
+        WorldResolver(candidates: [
+            "EGLL": [ResolvedWaypoint(identifier: "EGLL", coordinate: Coordinate(latitude: 51.47, longitude: -0.46), kind: .airport)],
+            "SBLO": [ResolvedWaypoint(identifier: "SBLO", coordinate: Coordinate(latitude: -23.33, longitude: -51.13), kind: .airport)],
+            "LON": [
+                // Londrina first, so "take the first match" would be wrong.
+                ResolvedWaypoint(identifier: "LON", name: "Londrina", coordinate: Coordinate(latitude: -23.33, longitude: -51.13), kind: .navaid),
+                ResolvedWaypoint(identifier: "LON", name: "London", coordinate: Coordinate(latitude: 51.50, longitude: -0.46), kind: .navaid),
+            ],
+        ])
+    }
+
+    @Test func ambiguousNavaidResolvesNearThePrecedingPoint() async throws {
+        let resolver = worldResolver()
+        let route = try await RouteParser(resolver: resolver).parse("EGLL LON")
+
+        guard case .waypoint(let resolved) = route.elements[1] else {
+            Issue.record("expected LON to resolve")
+            return
+        }
+        // Departing Heathrow, "LON" is London — not a navaid in Brazil.
+        #expect(resolved.name == "London")
+    }
+
+    @Test func theSameTokenResolvesDifferentlyFromElsewhere() async throws {
+        let resolver = worldResolver()
+        let route = try await RouteParser(resolver: resolver).parse("SBLO LON")
+
+        guard case .waypoint(let resolved) = route.elements[1] else {
+            Issue.record("expected LON to resolve")
+            return
+        }
+        #expect(resolved.name == "Londrina")
+    }
+
+    @Test func theFirstTokenHasNoAnchorAndLaterOnesDo() async throws {
+        let resolver = worldResolver()
+        _ = try await RouteParser(resolver: resolver).parse("EGLL LON")
+
+        #expect(resolver.log.anchors["EGLL"] == .some(nil))
+        // The anchor handed to LON is Heathrow's position.
+        let anchor = resolver.log.anchors["LON"] ?? nil
+        #expect(anchor?.latitude == 51.47)
+    }
+
+    @Test func latLonTokensAlsoAnchorTheNextLookup() async throws {
+        let resolver = worldResolver()
+        _ = try await RouteParser(resolver: resolver).parse("5130N00030W LON")
+
+        let anchor = resolver.log.anchors["LON"] ?? nil
+        #expect(anchor != nil)
+        #expect((anchor?.latitude ?? 0) > 50)
+    }
+}
+
 @Suite struct RouteParserTests {
     struct FakeResolver: WaypointResolving {
         let waypoints: [String: ResolvedWaypoint]
         let airways: [String: [ResolvedWaypoint]]
 
-        func resolveWaypoint(identifier: String) async throws -> ResolvedWaypoint? {
+        func resolveWaypoint(identifier: String, near: Coordinate?) async throws -> ResolvedWaypoint? {
             waypoints[identifier]
         }
 
@@ -244,5 +331,78 @@ import FBModels
 
         #expect(RouteParser.parseLatLon("KAUS") == nil)
         #expect(RouteParser.parseLatLon("9990N07805W") == nil)
+    }
+}
+
+/// Rules that genuinely differ by state. ICAO field *formats* are universal
+/// and covered above; these are the cases where giving US advice abroad would
+/// be wrong.
+@Suite struct FlightPlanJurisdictionTests {
+    private func plan(departure: String, alternate: String?, level: String = "A070") -> ICAOFlightPlan {
+        ICAOFlightPlan(
+            aircraftIdentification: "N123AB",
+            flightRules: .ifr,
+            aircraftType: "C172",
+            wakeTurbulenceCategory: .light,
+            equipment: "SBG",
+            surveillanceEquipment: "EB1",
+            departure: ICAOIdentifier(departure),
+            departureTime: Date(timeIntervalSinceNow: 3600),
+            cruisingSpeed: "N0120",
+            cruisingLevel: level,
+            route: "DCT",
+            destination: ICAOIdentifier("EDDM"),
+            totalEET: "0115",
+            alternate1: alternate.map { ICAOIdentifier($0) },
+            fuelEndurance: "0430",
+            personsOnBoard: 2
+        )
+    }
+
+    private func message(_ issues: [ValidationIssue], _ field: ValidationIssue.Field) -> String? {
+        issues.first { $0.field == field }?.message
+    }
+
+    @Test func alternateAdviceFollowsTheDepartureState() {
+        let us = FlightPlanValidator.validate(plan(departure: "KAUS", alternate: nil))
+        #expect(message(us, .alternate1)?.contains("1-2-3") == true)
+
+        // The 1-2-3 rule is a US regulation; naming it to a pilot departing
+        // Frankfurt would be actively wrong.
+        let germany = FlightPlanValidator.validate(plan(departure: "EDDF", alternate: nil))
+        #expect(message(germany, .alternate1)?.contains("1-2-3") == false)
+        #expect(message(germany, .alternate1)?.contains("AIP") == true)
+
+        let canada = FlightPlanValidator.validate(plan(departure: "CYYZ", alternate: nil))
+        #expect(message(canada, .alternate1)?.contains("TC AIM") == true)
+    }
+
+    @Test func jurisdictionCanBeOverriddenExplicitly() {
+        let issues = FlightPlanValidator.validate(
+            plan(departure: "KAUS", alternate: nil),
+            jurisdiction: .forCountry("DE")
+        )
+        #expect(message(issues, .alternate1)?.contains("1-2-3") == false)
+    }
+
+    @Test func altitudeAboveAFixedTransitionAltitudeWarns() {
+        // A180 is 18,000 ft — a flight level in US and Canadian airspace.
+        let us = FlightPlanValidator.validate(plan(departure: "KAUS", alternate: "KFTW", level: "A180"))
+        #expect(message(us, .cruisingLevel)?.contains("flight level") == true)
+
+        let below = FlightPlanValidator.validate(plan(departure: "KAUS", alternate: "KFTW", level: "A170"))
+        #expect(message(below, .cruisingLevel) == nil)
+    }
+
+    @Test func noTransitionWarningWhereItVariesByAerodrome() {
+        // Across most of Europe the transition altitude is per-aerodrome, so
+        // there is nothing to check against — staying quiet beats guessing.
+        let issues = FlightPlanValidator.validate(plan(departure: "EDDF", alternate: "EDDK", level: "A180"))
+        #expect(message(issues, .cruisingLevel) == nil)
+    }
+
+    @Test func metricLevelsRemainValidEverywhere() {
+        let issues = FlightPlanValidator.validate(plan(departure: "ZBAA", alternate: "ZSSS", level: "S1130"))
+        #expect(issues.contains { $0.field == .cruisingLevel && $0.severity == .error } == false)
     }
 }

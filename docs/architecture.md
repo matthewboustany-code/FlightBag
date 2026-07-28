@@ -28,7 +28,9 @@ the project history; this records the load-bearing choices.
 | Persistence (aviation data) | GRDB/SQLite, read-only per-cycle `aero.sqlite` built by server ingestion | FTS5 search, R*Tree spatial queries, atomic cycle swap; SwiftData can't do any of that |
 | Persistence (user data) | SwiftData, CloudKit-safe schema (defaults, optional relationships, no uniques) | Enables iCloud private-db sync later with no migration |
 | Map | MKMapView + MKTileOverlay reading local MBTiles via GRDB | Fully offline raster overlays without an embedded HTTP server; MapLibre is the named fallback |
-| Data scope | US/FAA v1; everything tagged `DataAuthority` | International providers plug in via registration, not UI surgery |
+| Data scope | Worldwide thin layer (OurAirports, public domain) over authoritative US/FAA data; everything tagged `DataAuthority` | International providers plug in via registration, not UI surgery |
+| Units | Canonical storage (hPa, SM, ft, NM, kt); `UnitPreferences` converts only for display, `Jurisdiction` picks the default | A preference must never rewrite what an observation said — wind stays in knots, the ICAO reporting unit, everywhere |
+| Rules vs. provenance | `DataAuthority` = who published a row; `Jurisdiction`/`RuleSet` = whose rules apply there | The two diverge as soon as data stops being FAA-only: OurAirports is the *authority* for a German aerodrome, EASA its *jurisdiction* |
 | Offline | Hard requirement from Phase 1 | Cockpit connectivity assumption is zero |
 
 ## Operational cadence

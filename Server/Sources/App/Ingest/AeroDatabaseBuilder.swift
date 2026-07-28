@@ -35,6 +35,7 @@ struct AeroDatabaseBuilder {
                     city TEXT,
                     state TEXT,
                     country TEXT NOT NULL DEFAULT 'US',
+                    iso_region TEXT,
                     lat REAL NOT NULL,
                     lon REAL NOT NULL,
                     elevation_ft REAL,
@@ -46,10 +47,15 @@ struct AeroDatabaseBuilder {
                     status TEXT,
                     authority TEXT NOT NULL DEFAULT 'faa'
                 );
+                CREATE INDEX idx_airport_country ON airport(country);
+                -- remove_diacritics 2 folds the full Latin-1/extended range, so
+                -- "Koln" matches "Köln" and "Malaga" matches "Málaga". The
+                -- default (1) leaves many of those unfolded, which only stops
+                -- mattering while the table is US-only.
                 CREATE VIRTUAL TABLE airport_fts USING fts5(
                     ident, name, city,
                     airport_id UNINDEXED,
-                    tokenize = 'unicode61'
+                    tokenize = 'unicode61 remove_diacritics 2'
                 );
                 CREATE VIRTUAL TABLE airport_rtree USING rtree(
                     id, min_lat, max_lat, min_lon, max_lon
@@ -160,7 +166,9 @@ struct AeroDatabaseBuilder {
     /// Bumped when the schema gains tables the app depends on, so the app can
     /// prefer a bundled seed over an installed database of the same cycle.
     /// 2: airway/airway_point tables. 3: procedure/procedure_leg (CIFP).
-    static let schemaVersion = 3
+    /// 4: worldwide coverage — `airport.iso_region`, a country index, and
+    /// diacritic-folding FTS so non-US names are searchable without accents.
+    static let schemaVersion = 4
 
     func setMeta(cycle: DataCycle) throws {
         try dbQueue.write { db in
@@ -174,10 +182,15 @@ struct AeroDatabaseBuilder {
         }
     }
 
-    /// Populate the FTS and R*Tree indexes from the airport table. Run once
-    /// after all airports are inserted.
+    /// Populate the FTS and R*Tree indexes from the airport table.
+    ///
+    /// Idempotent: clears first, so it can run after any combination of
+    /// airport ingests (NASR alone, NASR then OurAirports, OurAirports alone)
+    /// without duplicating index rows.
     func buildIndexes() throws {
         try dbQueue.write { db in
+            try db.execute(sql: "DELETE FROM airport_fts")
+            try db.execute(sql: "DELETE FROM airport_rtree")
             try db.execute(sql: """
                 INSERT INTO airport_fts (ident, name, city, airport_id)
                 SELECT COALESCE(icao_id, '') || ' ' || id, name, COALESCE(city, ''), id FROM airport;

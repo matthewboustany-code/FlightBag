@@ -1,9 +1,11 @@
 import SwiftUI
+import FBModels
 
 struct SettingsHomeView: View {
     @AppStorage("hasAcknowledgedDisclaimer") private var hasAcknowledgedDisclaimer = false
     @AppStorage("adsbEnabled") private var adsbEnabled = true
     @AppStorage(ServerConfig.defaultsKey) private var serverBaseURL = ""
+    @AppStorage(UnitSystemPreference.defaultsKey) private var unitSystem = UnitSystemPreference.automatic.rawValue
     @Environment(AppEnvironment.self) private var environment
 
     var body: some View {
@@ -14,6 +16,7 @@ struct SettingsHomeView: View {
                         AircraftListView()
                     }
                 }
+                unitsSection
                 adsbSection
                 Section {
                     TextField("https://data.example.com", text: $serverBaseURL)
@@ -36,6 +39,29 @@ struct SettingsHomeView: View {
                 }
             }
             .navigationTitle("Settings")
+        }
+    }
+
+    private var unitsSection: some View {
+        let selected = UnitSystemPreference(rawValue: unitSystem) ?? .automatic
+        return Section {
+            Picker("Units", selection: $unitSystem) {
+                ForEach(UnitSystemPreference.allCases) { preference in
+                    Text(preference.displayName).tag(preference.rawValue)
+                }
+            }
+            .accessibilityIdentifier("settings.units")
+        } header: {
+            Text("Units")
+        } footer: {
+            if let detail = selected.detail {
+                Text(detail)
+            } else {
+                // Naming the sample values makes the choice concrete without
+                // the pilot having to leave Settings to check.
+                Text("Altimeter \(selected.preferences(for: .unknown).formatAltimeter(hPa: 1013.25)), "
+                    + "visibility \(selected.preferences(for: .unknown).formatVisibility(statuteMiles: 10)).")
+            }
         }
     }
 

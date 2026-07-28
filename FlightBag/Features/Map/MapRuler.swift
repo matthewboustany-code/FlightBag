@@ -153,7 +153,11 @@ final class RulerHUDView: UIView {
         let to = Coordinate(latitude: coordB.latitude, longitude: coordB.longitude)
         let distance = NavMath.distanceNM(from: from, to: to)
         let course = NavMath.initialBearing(from: from, to: to)
-        label.text = String(format: "%.1f NM   %03.0f°T", distance, course)
+        // Read on each update rather than cached: the ruler is transient touch
+        // UI, so this always reflects the current setting with no invalidation
+        // to get wrong.
+        let readout = UnitSystemPreference.ambient.formatDistance(nauticalMiles: distance)
+        label.text = String(format: "%@   %03.0f°T", readout, course)
         label.sizeToFit()
 
         // Readout above the line's midpoint, nudged inside the view.
