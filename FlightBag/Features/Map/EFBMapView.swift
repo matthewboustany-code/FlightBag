@@ -191,7 +191,15 @@ struct EFBMapView: UIViewRepresentable {
 
                 if let chart = layers.chart {
                     if offlineSets.isEmpty {
-                        chartOverlays.append(StreamingChartOverlay(kind: chart))
+                        // nil when no authority streams this kind — open
+                        // flightmaps publishes MBTiles and runs no tile
+                        // service, so its charts only appear once downloaded.
+                        if let streaming = StreamingChartOverlay(
+                            kind: chart,
+                            manifestSources: layers.chartSources
+                        ) {
+                            chartOverlays.append(streaming)
+                        }
                     } else {
                         for set in offlineSets {
                             if let overlay = MBTilesOverlay(fileURL: set.url) {

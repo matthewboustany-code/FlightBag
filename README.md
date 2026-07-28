@@ -8,8 +8,9 @@ connectivity is zero.
 Authoritative FAA data for the US, with a worldwide thin layer (airports,
 runways, frequencies, navaids) from public-domain OurAirports data over the
 top. Everything is tagged with a `DataAuthority` so further providers plug in
-by registration. Charts, approach plates and coded procedures remain US-only —
-see [Data scope](#data-scope).
+by registration — VFR charts now come from the FAA in the US and
+[open flightmaps](https://openflightmaps.org) across much of Europe. Approach
+plates and coded procedures remain US-only — see [Data scope](#data-scope).
 
 ## Features
 
@@ -106,7 +107,8 @@ cron, and troubleshooting, see [Server/DEPLOY.md](Server/DEPLOY.md).
 | Airports, runways, frequencies, navaids | Worldwide (~72 000 aerodromes) | FAA NASR for the US; [OurAirports](https://ourairports.com/data/) (public domain) elsewhere |
 | METAR / TAF | Worldwide | aviationweather.gov |
 | Magnetic variation | Worldwide | NOAA World Magnetic Model (WMM2025, valid through 2030). NASR's published value wins for US airports; everywhere else it is computed, since OurAirports publishes none |
-| Charts, approach plates, coded procedures (SID/STAR), airways | **US only** | FAA d-TPP / CIFP / aeronav |
+| VFR charts | US + 19 European/African FIRs | FAA sectionals; [open flightmaps](https://openflightmaps.org) elsewhere (OFMA General Users' Licence — attribution required and shown on the map). Download-only: OFM ships MBTiles and runs no tile service |
+| Approach plates, coded procedures (SID/STAR), airways, IFR enroute | **US only** | FAA d-TPP / CIFP / aeronav. Eurocontrol's EAD is access-controlled and Nav Canada sells its charts, so neither can be redistributed from a self-hosted server |
 | TFRs, winds aloft, FIS-B uplink weather | **US only** | No equivalent free service exists elsewhere. 1090ES ADS-B traffic still works worldwide — only the uplink is US-specific. |
 
 Assisted filing hands off to 1800wxbrief, which is a US portal.

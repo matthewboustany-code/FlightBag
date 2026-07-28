@@ -12,6 +12,9 @@ struct ChartStore: Sendable {
         var cycleId: String
         var url: URL
         var kind: ChartKind
+        /// Who published it, from the `.authority` sidecar written at install.
+        /// nil for sideloaded sets, whose provenance we genuinely do not know.
+        var authority: DataAuthority?
     }
 
     private let cyclesRoot: URL
@@ -52,6 +55,19 @@ struct ChartStore: Sendable {
         return ChartKind.kind(forFileName: fileName)
     }
 
+    /// Who published a tile set, from the sidecar `DownloadCenter` writes.
+    ///
+    /// Deliberately nil rather than `.faa` when absent: a sideloaded chart has
+    /// unknown provenance, and defaulting it to the FAA would print a credit
+    /// that might be wrong while hiding one that is required.
+    static func authority(for url: URL) -> DataAuthority? {
+        guard let data = try? Data(contentsOf: url.appendingPathExtension("authority")),
+              let raw = String(data: data, encoding: .utf8)
+        else { return nil }
+        let authority = DataAuthority(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines))
+        return authority == .unknown ? nil : authority
+    }
+
     private func scanTileSets(matching include: (String) -> Bool) -> [ChartSet] {
         let fileManager = FileManager.default
         guard let cycles = try? fileManager.contentsOfDirectory(atPath: cyclesRoot.path) else { return [] }
@@ -68,7 +84,8 @@ struct ChartStore: Sendable {
                     name: name,
                     cycleId: cycle,
                     url: url,
-                    kind: Self.kind(for: url, fileName: file)
+                    kind: Self.kind(for: url, fileName: file),
+                    authority: Self.authority(for: url)
                 ))
             }
         }

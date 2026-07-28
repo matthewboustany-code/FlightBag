@@ -62,6 +62,8 @@ struct IngestAllCommand: AsyncCommand {
         let ifrLowPanels: [Int]
         let ifrHighPanels: [Int]
         let plateRegions: [String]
+        /// open flightmaps FIRs to fetch VFR charts for.
+        let openFlightMapsFIRs: [String]
         /// auto = build only when no basemap exists in any cycle directory
         /// (the manifest carries an old one forward, so one build lasts).
         let basemap: String
@@ -73,6 +75,7 @@ struct IngestAllCommand: AsyncCommand {
                 ifrLowPanels: try panels(Selection(environment: "FLIGHTBAG_IFR_LOW_PANELS"), range: 1...36, name: "FLIGHTBAG_IFR_LOW_PANELS"),
                 ifrHighPanels: try panels(Selection(environment: "FLIGHTBAG_IFR_HIGH_PANELS"), range: 1...12, name: "FLIGHTBAG_IFR_HIGH_PANELS"),
                 plateRegions: try regionIds(Selection(environment: "FLIGHTBAG_REGIONS")),
+                openFlightMapsFIRs: try openFlightMapsFIRs(Selection(environment: "FLIGHTBAG_OFM_FIRS")),
                 basemap: try basemapPolicy(),
                 minFreeGB: Environment.get("FLIGHTBAG_MIN_FREE_GB").flatMap(Int.init) ?? 50
             )
@@ -116,6 +119,22 @@ struct IngestAllCommand: AsyncCommand {
                         throw Abort(.badRequest, reason: "FLIGHTBAG_REGIONS: unknown region \"\($0)\" (use state ids like US-TX)")
                     }
                     return id
+                }
+            }
+        }
+
+        private static func openFlightMapsFIRs(_ selection: Selection) throws -> [String] {
+            let known = ChartCatalog.openFlightMapsFIRs.map(\.0)
+            switch selection {
+            case .none: return []
+            case .all: return known
+            case .list(let raw):
+                return try raw.map {
+                    let fir = $0.lowercased()
+                    guard known.contains(fir) else {
+                        throw Abort(.badRequest, reason: "FLIGHTBAG_OFM_FIRS: unknown FIR \"\($0)\" (known: \(known.joined(separator: ", ")))")
+                    }
+                    return fir
                 }
             }
         }
@@ -171,6 +190,8 @@ struct IngestAllCommand: AsyncCommand {
 
         try await buildDatabase(cycle: cycle, cycleDir: cycleDir, workDir: workDir, console: console)
         try await buildTiles(scope: scope, cycle: cycle, artifactsRoot: artifactsRoot, workDir: workDir, pipeline: pipeline, console: console)
+        try await OpenFlightMapsIngestor(workDirectory: workDir) { console.info($0) }
+            .run(cycle: cycle, firs: scope.openFlightMapsFIRs, into: cycleDir)
         try await buildBasemap(policy: scope.basemap, cycle: cycle, artifactsRoot: artifactsRoot, workDir: workDir, pipeline: pipeline, console: console)
         try await buildPlates(regions: scope.plateRegions, cycle: cycle, cycleDir: cycleDir, workDir: workDir, console: console)
         try writeManifest(artifactsRoot: artifactsRoot, baseURL: baseURL, currentCycle: manifestCycle, console: console)

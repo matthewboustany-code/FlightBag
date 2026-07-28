@@ -50,7 +50,8 @@ struct ManifestBuilder {
             cycle: currentCycle.id,
             regions: ChartCatalog.regions,
             products: products.sorted { $0.id < $1.id },
-            nextCycleProducts: nextCycleProducts.sorted { $0.id < $1.id }
+            nextCycleProducts: nextCycleProducts.sorted { $0.id < $1.id },
+            chartSources: ChartCatalog.chartSources
         )
     }
 
@@ -90,6 +91,9 @@ struct ManifestBuilder {
         return DownloadProduct(
             id: "\(cycleId)/\(category)/\(file)",
             contentKind: contentKind,
+            // Taken from the regions the artifact serves; they are registered
+            // with their publisher, so nothing has to be inferred from a name.
+            authority: regionIds.compactMap { ChartCatalog.region(id: $0)?.authority }.first ?? .faa,
             title: title,
             cycle: cycleId,
             regionIds: regionIds,
@@ -108,6 +112,13 @@ struct ManifestBuilder {
     /// nil for files the manifest shouldn't publish.
     private func classify(_ file: String, at fileURL: URL) -> (DownloadProduct.ContentKind, [String], String)? {
         for (suffix, kind) in ChartCatalog.tileSuffixKinds where file.hasSuffix(suffix) {
+            // open flightmaps artifacts carry their FIR in the filename and
+            // cover exactly that region, so the bounds-intersection path — which
+            // matches against US state boxes — must not run for them or a
+            // German chart resolves to no regions at all.
+            if let regionIds = ChartCatalog.openFlightMapsFIR(forArtifact: file).map({ ["OFM-\($0.uppercased())"] }) {
+                return (kind, regionIds, ChartCatalog.title(forTileArtifact: file) ?? displayName(file))
+            }
             return (kind, tileRegionIds(file, at: fileURL), displayName(file))
         }
         if file.hasPrefix("plates_"), file.hasSuffix(".zip") {

@@ -161,6 +161,9 @@ package dir) — the XCUITest ban applies only to the app's UI tests.
 | "Why is this feature missing abroad?" | FBModels `Capability` + `RuleSet.capabilities`, app-side `CapabilityNotice.swift` |
 | Magnetic variation / magnetic courses | FBModels `MagneticModel.swift`; consumed by `NavLogBuilder` (per leg, at the planned departure date) and `AirportDetailView.magneticVariationRow`. Updating the model = drop in the next `WMM.COF` and change the epoch/validity |
 | Worldwide airspace | `OpenAIPAirspaceProvider` (CC BY-NC, needs a key; `AirspaceStore` picks it by viewport centre) |
+| Where a chart layer's tiles come from | FBModels `ChartSource` (manifest-carried: authority, tile template, zoom range, regions). `ChartKind` is now only a *category*. Built-in FAA descriptors exist solely as a pre-manifest fallback |
+| Adding a chart authority | server `ChartCatalog.chartSources` + `regions`, plus an ingestor. `OpenFlightMapsIngestor` is the simplest example — OFM publishes MBTiles directly, so ingest is a verified copy with no GDAL step |
+| Source attribution | `DataAuthority.attribution`; carried to disk by DownloadCenter's `.authority` sidecar, read by `ChartStore`, rendered by `MapHomeView.attributionStrip`. Works offline by design — the licences do not lapse without a network |
 | Downloads / cycles | FBModels `DataCycle` + `DownloadManifest`/`Region`, `DownloadCenter.swift`, `DownloadsHomeView.swift` |
 | Chart-region downloads end-to-end | server `ManifestBuilder`/`ChartCatalog` → app `ManifestClient` → `DownloadCenter` → `ChartStore` (map picks tiles up via `chartsVersion`) |
 | Deploying / operating the data server | `Server/DEPLOY.md`, then `docker-compose.yml` + `IngestAllCommand.swift` |
