@@ -43,8 +43,23 @@ enum ChartKind: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// The manifest's content kind for this chart, when it maps to one the map
+    /// can draw. `basemap`/`aeroDatabase`/`plates`/`terrain` are not charts.
+    init?(contentKind: DownloadProduct.ContentKind) {
+        switch contentKind {
+        case .vfrSectional: self = .vfrSectional
+        case .ifrEnrouteLow: self = .ifrLow
+        case .ifrEnrouteHigh: self = .ifrHigh
+        case .basemap, .aeroDatabase, .plates, .terrain: return nil
+        }
+    }
+
     /// Classify a downloaded tile set by its file name
     /// ("San_Antonio_sectional.mbtiles" → VFR, "*_ifr_low.mbtiles" → IFR low).
+    ///
+    /// Fallback only — prefer `ChartStore.kind(for:fileName:)`, which reads
+    /// the manifest's answer. This substring match assumes FAA naming: a chart
+    /// whose name merely contains "high" would be misclassified as IFR high.
     static func kind(forFileName file: String) -> ChartKind {
         let lower = file.lowercased()
         if lower.contains("ifr_high") || lower.contains("ifrhigh") || lower.contains("high") { return .ifrHigh }

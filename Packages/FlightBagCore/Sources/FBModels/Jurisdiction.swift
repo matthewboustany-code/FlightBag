@@ -48,8 +48,10 @@ public enum RuleSet: String, Codable, Sendable, CaseIterable, Hashable {
     /// VFR/MVFR/IFR/LIFR are FAA definitions. Other states have their own
     /// VMC/IMC minima, so the category badge is meaningless — and misleading —
     /// outside US airspace.
+    ///
+    /// Delegates to `Capability` so there is one place that decides.
     public var usesFlightCategories: Bool {
-        self == .faa
+        supports(.flightCategories)
     }
 }
 

@@ -18,8 +18,17 @@ struct AirportDetailView: View {
                     WeatherSection(station: weatherStation(for: detail))
                     runwaysSection(detail)
                     frequenciesSection(detail)
-                    PlatesSection(plates: detail.plates)
-                    ProceduresSection(airport: detail.airport)
+                    // Plates and coded procedures are FAA products. Outside US
+                    // airspace an empty list would read as "this airport has
+                    // no approaches", which is not what we know.
+                    if jurisdiction(for: detail).supports(.plates) {
+                        PlatesSection(plates: detail.plates)
+                        ProceduresSection(airport: detail.airport)
+                    } else {
+                        Section("Procedures") {
+                            CapabilityNotice(capability: .plates)
+                        }
+                    }
                     notamSection(detail)
                 }
             } else if loadFailed {
@@ -56,12 +65,15 @@ struct AirportDetailView: View {
         detail.airport.icaoId ?? ICAOIdentifier(detail.airport.id)
     }
 
+    private func jurisdiction(for detail: AeroDatabase.AirportDetail) -> Jurisdiction {
+        .forAirport(country: detail.airport.country, identifier: detail.airport.icaoId)
+    }
+
     /// Units for the airport on screen, so a European field reads in metres
     /// even when the pilot's own base is in the US.
     private func units(for detail: AeroDatabase.AirportDetail) -> UnitPreferences {
-        (UnitSystemPreference(rawValue: unitSystem) ?? .automatic).preferences(
-            for: .forAirport(country: detail.airport.country, identifier: detail.airport.icaoId)
-        )
+        (UnitSystemPreference(rawValue: unitSystem) ?? .automatic)
+            .preferences(for: jurisdiction(for: detail))
     }
 
     private func infoSection(_ detail: AeroDatabase.AirportDetail) -> some View {
