@@ -282,7 +282,19 @@ final class DownloadCenter {
         switch product.contentKind {
         case .vfrSectional, .ifrEnrouteLow, .ifrEnrouteHigh, .basemap:
             let relative = "\(product.cycle)/tiles/\(product.url.lastPathComponent)"
-            try install(staged, into: cyclesRoot.appendingPathComponent(relative))
+            let target = cyclesRoot.appendingPathComponent(relative)
+            try install(staged, into: target)
+            // Record what the manifest said this chart is. ChartStore would
+            // otherwise have to re-derive it from the filename, which only
+            // works while filenames follow FAA conventions.
+            try? Data(product.contentKind.rawValue.utf8)
+                .write(to: target.appendingPathExtension("kind"), options: .atomic)
+            // And who published it, so the map can credit the source with no
+            // manifest in hand. The OFMA licence and CC BY-NC both require
+            // attribution wherever the data is shown — including offline,
+            // which is most of the time.
+            try? Data(product.authority.rawValue.utf8)
+                .write(to: target.appendingPathExtension("authority"), options: .atomic)
             artifact.relativePath = relative
         case .aeroDatabase:
             let relative = "\(product.cycle)/aero.sqlite"
@@ -337,6 +349,8 @@ final class DownloadCenter {
             let stale = cyclesRoot.appendingPathComponent("\(dir)/tiles/\(fileName)")
             if FileManager.default.fileExists(atPath: stale.path) {
                 try? FileManager.default.removeItem(at: stale)
+                try? FileManager.default.removeItem(at: stale.appendingPathExtension("kind"))
+                try? FileManager.default.removeItem(at: stale.appendingPathExtension("authority"))
                 installed = installed.filter { $0.value.relativePath != "\(dir)/tiles/\(fileName)" }
             }
         }
@@ -354,7 +368,12 @@ final class DownloadCenter {
 
     private func removeFromDisk(_ artifact: InstalledArtifact) {
         if !artifact.relativePath.isEmpty {
-            try? FileManager.default.removeItem(at: cyclesRoot.appendingPathComponent(artifact.relativePath))
+            let url = cyclesRoot.appendingPathComponent(artifact.relativePath)
+            try? FileManager.default.removeItem(at: url)
+            // Tile sets carry `.kind` and `.authority` sidecars; leaving one
+            // behind would make a deleted chart look present to a future scan.
+            try? FileManager.default.removeItem(at: url.appendingPathExtension("kind"))
+            try? FileManager.default.removeItem(at: url.appendingPathExtension("authority"))
         }
         // Plates: remove this bundle's airport dirs unless another installed
         // bundle also provides them.

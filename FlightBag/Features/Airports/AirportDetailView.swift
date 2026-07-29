@@ -8,6 +8,7 @@ struct AirportDetailView: View {
     @Environment(AppEnvironment.self) private var environment
     @State private var detail: AeroDatabase.AirportDetail?
     @State private var loadFailed = false
+    @AppStorage(UnitSystemPreference.defaultsKey) private var unitSystem = UnitSystemPreference.automatic.rawValue
 
     var body: some View {
         Group {
@@ -17,8 +18,17 @@ struct AirportDetailView: View {
                     WeatherSection(station: weatherStation(for: detail))
                     runwaysSection(detail)
                     frequenciesSection(detail)
-                    PlatesSection(plates: detail.plates)
-                    ProceduresSection(airport: detail.airport)
+                    // Plates and coded procedures are FAA products. Outside US
+                    // airspace an empty list would read as "this airport has
+                    // no approaches", which is not what we know.
+                    if jurisdiction(for: detail).supports(.plates) {
+                        PlatesSection(plates: detail.plates)
+                        ProceduresSection(airport: detail.airport)
+                    } else {
+                        Section("Procedures") {
+                            CapabilityNotice(capability: .plates)
+                        }
+                    }
                     notamSection(detail)
                 }
             } else if loadFailed {
@@ -55,6 +65,17 @@ struct AirportDetailView: View {
         detail.airport.icaoId ?? ICAOIdentifier(detail.airport.id)
     }
 
+    private func jurisdiction(for detail: AeroDatabase.AirportDetail) -> Jurisdiction {
+        .forAirport(country: detail.airport.country, identifier: detail.airport.icaoId)
+    }
+
+    /// Units for the airport on screen, so a European field reads in metres
+    /// even when the pilot's own base is in the US.
+    private func units(for detail: AeroDatabase.AirportDetail) -> UnitPreferences {
+        (UnitSystemPreference(rawValue: unitSystem) ?? .automatic)
+            .preferences(for: jurisdiction(for: detail))
+    }
+
     private func infoSection(_ detail: AeroDatabase.AirportDetail) -> some View {
         Section {
             VStack(alignment: .leading, spacing: 4) {
@@ -64,14 +85,12 @@ struct AirportDetailView: View {
                     .foregroundStyle(.secondary)
             }
             if let elevation = detail.airport.elevationFeet {
-                LabeledContent("Elevation", value: "\(Int(elevation.rounded())) ft MSL")
+                LabeledContent("Elevation", value: "\(units(for: detail).formatAltitude(feet: elevation)) MSL")
             }
             if let tpa = detail.trafficPatternAltitude {
-                LabeledContent("Pattern Altitude", value: "\(Int(tpa.rounded())) ft MSL")
+                LabeledContent("Pattern Altitude", value: "\(units(for: detail).formatAltitude(feet: tpa)) MSL")
             }
-            if let magVar = detail.airport.magneticVariation {
-                LabeledContent("Magnetic Variation", value: String(format: "%.0f°%@", abs(magVar), magVar >= 0 ? "E" : "W"))
-            }
+            magneticVariationRow(detail)
             LabeledContent("Coordinates") {
                 Text(String(format: "%.4f, %.4f", detail.airport.coordinate.latitude, detail.airport.coordinate.longitude))
                     .monospaced()
@@ -79,6 +98,36 @@ struct AirportDetailView: View {
             if detail.facilityUse == "PR" {
                 Label("Private facility — prior permission required", systemImage: "lock")
                     .foregroundStyle(.orange)
+            }
+        }
+    }
+
+    /// Magnetic variation, published where NASR has it and computed from the
+    /// World Magnetic Model everywhere else.
+    ///
+    /// The published figure wins when present: it is what the state charted
+    /// the runways against, so preferring a computed value would put this row
+    /// at odds with the runway headings just below it. Outside the US no
+    /// published figure exists — OurAirports carries none — and before the
+    /// model this row simply disappeared, which read as "this airport has no
+    /// variation" rather than "we don't have it".
+    @ViewBuilder
+    private func magneticVariationRow(_ detail: AeroDatabase.AirportDetail) -> some View {
+        if let published = detail.airport.magneticVariation {
+            LabeledContent("Magnetic Variation", value: AngleFormat.variation(published))
+        } else {
+            let result = WorldMagneticModel.wmm2025.field(
+                at: detail.airport.coordinate,
+                on: Date(),
+                altitudeFeet: Double(detail.airport.elevationFeet ?? 0)
+            )
+            LabeledContent("Magnetic Variation") {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(AngleFormat.variation(result.field.declination))
+                    Text(result.validity == .valid ? "Computed (WMM)" : "Computed (WMM, expired)")
+                        .font(.caption2)
+                        .foregroundStyle(result.validity == .valid ? Color.secondary : Color.orange)
+                }
             }
         }
     }
@@ -95,7 +144,8 @@ struct AirportDetailView: View {
                             .font(.headline.monospaced())
                         Spacer()
                         if let length = runway.lengthFeet, let width = runway.widthFeet {
-                            Text("\(length)′ × \(width)′")
+                            let prefs = units(for: detail)
+                            Text("\(prefs.formatRunwayLength(feet: Double(length))) × \(prefs.formatRunwayLength(feet: Double(width)))")
                                 .monospacedDigit()
                         }
                     }

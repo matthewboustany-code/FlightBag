@@ -12,13 +12,73 @@ import FBModels
 enum ChartCatalog {
     // MARK: Regions
 
-    static let regions: [Region] = usStateNames
-        .map { code, name in
+    static let regions: [Region] = (
+        usStateNames.map { code, name in
             Region(id: "US-\(code)", name: name, authority: .faa, kind: .stateOrProvince)
         }
-        .sorted { $0.name < $1.name }
+        + openFlightMapsRegions
+    ).sorted { $0.name < $1.name }
 
     static var regionIds: [String] { regions.map(\.id) }
+
+    // MARK: open flightmaps
+
+    /// open flightmaps coverage, keyed by ICAO FIR rather than by country.
+    ///
+    /// FIRs are how OFM publishes — `ed` is one artifact for all of Germany,
+    /// `lf` one for France — and they do not always line up with borders, so
+    /// inventing country regions here would misrepresent what a download
+    /// actually contains. `Region.Kind.custom` exists for exactly this: a
+    /// coverage area that is neither a state nor a country.
+    static let openFlightMapsRegions: [Region] = openFlightMapsFIRs.map { fir, name in
+        Region(id: "OFM-\(fir.uppercased())", name: name, authority: .openFlightMaps, kind: .custom)
+    }
+
+    /// FIR code → display name, matching `snapshots.openflightmaps.org`'s
+    /// `live/{cycle}/tiles/{fir}/` layout.
+    static let openFlightMapsFIRs: [(String, String)] = [
+        ("ebbu", "Belgium & Luxembourg"),
+        ("ed", "Germany"),
+        ("efin", "Finland"),
+        ("ehaa", "Netherlands"),
+        ("ekdk", "Denmark"),
+        ("epww", "Poland"),
+        ("esaa", "Sweden"),
+        ("lbsr", "Bulgaria"),
+        ("ldzo", "Croatia"),
+        ("lf", "France"),
+        ("lggg", "Greece"),
+        ("lhcc", "Hungary"),
+        ("li", "Italy"),
+        ("ljla", "Slovenia"),
+        ("lkaa", "Czech Republic"),
+        ("lovv", "Austria"),
+        ("lrbb", "Romania"),
+        ("lsas", "Switzerland"),
+        ("lzbb", "Slovakia"),
+    ]
+
+    // MARK: Chart sources
+
+    /// Descriptors published in the manifest so the app learns where each
+    /// chart layer comes from instead of hardcoding it.
+    ///
+    /// The FAA entries duplicate the app's built-in fallbacks on purpose: once
+    /// the manifest is reachable the server's copy wins, so a service URL or
+    /// zoom range can be corrected without an app release.
+    ///
+    /// open flightmaps has no `streaming` entry because it publishes MBTiles
+    /// rather than running a tile service — its charts are download-only, and
+    /// claiming otherwise would leave the map silently blank over Europe.
+    static let chartSources: [ChartSource] = ChartSource.faaBuiltIns + [
+        ChartSource(
+            id: "ofm-vfr",
+            authority: .openFlightMaps,
+            contentKind: .vfrSectional,
+            title: "open flightmaps VFR",
+            regionIds: openFlightMapsRegions.map(\.id)
+        )
+    ]
 
     static func region(id: String) -> Region? {
         regions.first { $0.id == id }
@@ -38,6 +98,12 @@ enum ChartCatalog {
     /// Region ids for a produced tile artifact filename
     /// ("San_Antonio_sectional.mbtiles"), or nil if the chart is unknown.
     static func regionIds(forTileArtifact fileName: String) -> [String]? {
+        // open flightmaps artifacts are named for their FIR and map to exactly
+        // one region, so they resolve by name rather than through the
+        // sectional coverage table.
+        if let fir = openFlightMapsFIR(forArtifact: fileName) {
+            return ["OFM-\(fir.uppercased())"]
+        }
         for (suffix, _) in Self.tileSuffixKinds {
             if fileName.hasSuffix(suffix) {
                 let base = String(fileName.dropLast(suffix.count))
@@ -45,6 +111,24 @@ enum ChartCatalog {
             }
         }
         return nil
+    }
+
+    /// The FIR an `OFM_ED_sectional.mbtiles`-style artifact belongs to.
+    static func openFlightMapsFIR(forArtifact fileName: String) -> String? {
+        guard fileName.hasPrefix("OFM_") else { return nil }
+        let body = fileName.dropFirst("OFM_".count)
+        guard let underscore = body.firstIndex(of: "_") else { return nil }
+        let fir = String(body[body.startIndex..<underscore]).lowercased()
+        return openFlightMapsFIRs.contains { $0.0 == fir } ? fir : nil
+    }
+
+    /// Display title for a tile artifact, where the catalog knows a better one
+    /// than the filename. "Germany VFR (open flightmaps)" beats "OFM ED".
+    static func title(forTileArtifact fileName: String) -> String? {
+        guard let fir = openFlightMapsFIR(forArtifact: fileName),
+              let name = openFlightMapsFIRs.first(where: { $0.0 == fir })?.1
+        else { return nil }
+        return "\(name) VFR (open flightmaps)"
     }
 
     /// Filename-suffix → content-kind convention every tile pipeline output

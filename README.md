@@ -5,8 +5,12 @@ self-hosted data server. Charts, plates, airport data, flight planning,
 weather, and live ADS-B In — built around the assumption that cockpit
 connectivity is zero.
 
-US/FAA data scope for v1; everything is tagged with a `DataAuthority` so
-international providers can plug in later.
+Authoritative FAA data for the US, with a worldwide thin layer (airports,
+runways, frequencies, navaids) from public-domain OurAirports data over the
+top. Everything is tagged with a `DataAuthority` so further providers plug in
+by registration — VFR charts now come from the FAA in the US and
+[open flightmaps](https://openflightmaps.org) across much of Europe. Approach
+plates and coded procedures remain US-only — see [Data scope](#data-scope).
 
 ## Features
 
@@ -28,8 +32,12 @@ international providers can plug in later.
   generation, and assisted filing via a zero-friction handoff to
   1800wxbrief. Direct Leidos LMFS filing is a planned fast-follow behind the
   same `FilingService` protocol.
-- **Airports** — FTS5 search, airport detail with raw/decoded METAR & TAF,
-  plates viewer.
+- **Airports** — FTS5 search (diacritic-folding, so "Koln" finds "Köln"),
+  airport detail with raw/decoded METAR & TAF, plates viewer.
+- **Units** — inHg/hPa, statute miles/metres, feet/metres, knots/km-h,
+  following the country you're viewing by default or pinned in Settings.
+  Both US and ICAO report forms decode (`P6SM` and `9999`, `A2992` and
+  `Q1013`, CAVOK, m/s wind).
 - **Downloads** — per-region chart/plate/database downloads versioned by
   28-day AIRAC cycle, background `URLSession` with resume, sha256 verify,
   atomic cycle swap, and freshness badges everywhere.
@@ -91,6 +99,19 @@ cron, and troubleshooting, see [Server/DEPLOY.md](Server/DEPLOY.md).
 - **Do not run `FlightBagUITests` locally** — they freeze the machine.
   UI verification uses the demo launch arguments above plus
   `xcrun simctl` screenshots instead.
+
+## Data scope
+
+| Data | Coverage | Source |
+|---|---|---|
+| Airports, runways, frequencies, navaids | Worldwide (~72 000 aerodromes) | FAA NASR for the US; [OurAirports](https://ourairports.com/data/) (public domain) elsewhere |
+| METAR / TAF | Worldwide | aviationweather.gov |
+| Magnetic variation | Worldwide | NOAA World Magnetic Model (WMM2025, valid through 2030). NASR's published value wins for US airports; everywhere else it is computed, since OurAirports publishes none |
+| VFR charts | US + 19 European/African FIRs | FAA sectionals; [open flightmaps](https://openflightmaps.org) elsewhere (OFMA General Users' Licence — attribution required and shown on the map). Download-only: OFM ships MBTiles and runs no tile service |
+| Approach plates, coded procedures (SID/STAR), airways, IFR enroute | **US only** | FAA d-TPP / CIFP / aeronav. Eurocontrol's EAD is access-controlled and Nav Canada sells its charts, so neither can be redistributed from a self-hosted server |
+| TFRs, winds aloft, FIS-B uplink weather | **US only** | No equivalent free service exists elsewhere. 1090ES ADS-B traffic still works worldwide — only the uplink is US-specific. |
+
+Assisted filing hands off to 1800wxbrief, which is a US portal.
 
 ## Data & operational notes
 

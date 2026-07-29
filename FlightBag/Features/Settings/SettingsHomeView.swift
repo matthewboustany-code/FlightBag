@@ -1,9 +1,12 @@
 import SwiftUI
+import FBModels
 
 struct SettingsHomeView: View {
     @AppStorage("hasAcknowledgedDisclaimer") private var hasAcknowledgedDisclaimer = false
     @AppStorage("adsbEnabled") private var adsbEnabled = true
     @AppStorage(ServerConfig.defaultsKey) private var serverBaseURL = ""
+    @AppStorage(UnitSystemPreference.defaultsKey) private var unitSystem = UnitSystemPreference.automatic.rawValue
+    @AppStorage("openAIPKey") private var openAIPKey = ""
     @Environment(AppEnvironment.self) private var environment
 
     var body: some View {
@@ -14,6 +17,7 @@ struct SettingsHomeView: View {
                         AircraftListView()
                     }
                 }
+                unitsSection
                 adsbSection
                 Section {
                     TextField("https://data.example.com", text: $serverBaseURL)
@@ -26,6 +30,18 @@ struct SettingsHomeView: View {
                 } footer: {
                     Text("Where chart-region downloads come from. Leave empty until a FlightBag data server is available.")
                 }
+                Section {
+                    SecureField("openAIP API key", text: $openAIPKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityIdentifier("settings.openAIPKey")
+                } header: {
+                    Text("Worldwide Airspace")
+                } footer: {
+                    Text("Airspace outside the US comes from openAIP, which needs a free key from your openAIP profile. "
+                        + "Their data is licensed for non-commercial use and requires attribution. "
+                        + "Without a key, airspace is shown for US airspace only.")
+                }
                 Section("Legal") {
                     Button("Review Advisory-Use Disclaimer") {
                         hasAcknowledgedDisclaimer = false
@@ -36,6 +52,29 @@ struct SettingsHomeView: View {
                 }
             }
             .navigationTitle("Settings")
+        }
+    }
+
+    private var unitsSection: some View {
+        let selected = UnitSystemPreference(rawValue: unitSystem) ?? .automatic
+        return Section {
+            Picker("Units", selection: $unitSystem) {
+                ForEach(UnitSystemPreference.allCases) { preference in
+                    Text(preference.displayName).tag(preference.rawValue)
+                }
+            }
+            .accessibilityIdentifier("settings.units")
+        } header: {
+            Text("Units")
+        } footer: {
+            if let detail = selected.detail {
+                Text(detail)
+            } else {
+                // Naming the sample values makes the choice concrete without
+                // the pilot having to leave Settings to check.
+                Text("Altimeter \(selected.preferences(for: .unknown).formatAltimeter(hPa: 1013.25)), "
+                    + "visibility \(selected.preferences(for: .unknown).formatVisibility(statuteMiles: 10)).")
+            }
         }
     }
 

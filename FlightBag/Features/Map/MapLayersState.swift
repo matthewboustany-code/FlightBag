@@ -2,9 +2,9 @@ import Foundation
 import Observation
 import FBModels
 
-/// An aeronautical chart type the map can display. Each kind renders from
-/// downloaded MBTiles when available, otherwise it streams from the FAA's
-/// public ArcGIS raster tile services (aeronautical data is public domain).
+/// An aeronautical chart type the map can display — a *category*, not a
+/// source. Which service or file backs a kind is `ChartSource`'s job, carried
+/// in the manifest, so a new authority does not need an app release.
 enum ChartKind: String, CaseIterable, Identifiable, Sendable {
     case vfrSectional = "vfr"
     case ifrLow = "ifrlow"
@@ -20,31 +20,33 @@ enum ChartKind: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    /// FAA AIS tile service backing this chart when no offline tiles exist.
-    private var faaServiceName: String {
+    /// This kind as a manifest content kind, for matching against
+    /// `ChartSource` descriptors.
+    var contentKind: DownloadProduct.ContentKind {
         switch self {
-        case .vfrSectional: "VFR_Sectional"
-        case .ifrLow: "IFR_AreaLow"
-        case .ifrHigh: "IFR_High"
+        case .vfrSectional: .vfrSectional
+        case .ifrLow: .ifrEnrouteLow
+        case .ifrHigh: .ifrEnrouteHigh
         }
     }
 
-    var streamingURLTemplate: String {
-        "https://tiles.arcgis.com/tiles/ssFJjBXIUyZDrSYZ/arcgis/rest/services/\(faaServiceName)/MapServer/tile/{z}/{y}/{x}"
-    }
-
-    /// Zoom levels the FAA service publishes; outside this range the layer
-    /// draws nothing (MapKit does not resample raster tiles).
-    var streamingZoomRange: ClosedRange<Int> {
-        switch self {
-        case .vfrSectional: 8...12
-        case .ifrLow: 7...12
-        case .ifrHigh: 5...9
+    /// The manifest's content kind for this chart, when it maps to one the map
+    /// can draw. `basemap`/`aeroDatabase`/`plates`/`terrain` are not charts.
+    init?(contentKind: DownloadProduct.ContentKind) {
+        switch contentKind {
+        case .vfrSectional: self = .vfrSectional
+        case .ifrEnrouteLow: self = .ifrLow
+        case .ifrEnrouteHigh: self = .ifrHigh
+        case .basemap, .aeroDatabase, .plates, .terrain: return nil
         }
     }
 
     /// Classify a downloaded tile set by its file name
     /// ("San_Antonio_sectional.mbtiles" → VFR, "*_ifr_low.mbtiles" → IFR low).
+    ///
+    /// Fallback only — prefer `ChartStore.kind(for:fileName:)`, which reads
+    /// the manifest's answer. This substring match assumes FAA naming: a chart
+    /// whose name merely contains "high" would be misclassified as IFR high.
     static func kind(forFileName file: String) -> ChartKind {
         let lower = file.lowercased()
         if lower.contains("ifr_high") || lower.contains("ifrhigh") || lower.contains("high") { return .ifrHigh }
@@ -132,5 +134,37 @@ final class MapLayersState {
     var offlineSetsForSelectedChart: [ChartStore.ChartSet] {
         guard let chart else { return [] }
         return availableCharts.filter { $0.kind == chart }
+    }
+
+    /// Chart sources published by the manifest. Empty until the first
+    /// successful fetch, which is why `ChartSource` keeps built-in FAA
+    /// descriptors — the map still streams on a cold first launch.
+    var chartSources: [ChartSource] = []
+
+    /// Attribution for whatever is on screen, deduplicated.
+    ///
+    /// Not decoration: the OFMA licence and CC BY-NC both require the source
+    /// to be credited, so a chart that renders without this is a chart used
+    /// outside its licence.
+    var activeChartAttribution: [String] {
+        guard let chart else { return [] }
+        var credits: [String] = []
+
+        let offline = offlineSetsForSelectedChart
+        if offline.isEmpty {
+            // Streaming: credit whoever's service is being hit.
+            if let source = ChartSource.streamingSource(for: chart.contentKind, manifestSources: chartSources),
+               let attribution = source.attribution {
+                credits.append(attribution)
+            }
+        } else {
+            // Offline: the authority travels with the file, so the credit
+            // survives having never fetched a manifest — which is the normal
+            // case in flight, and exactly when the licence still applies.
+            credits += offline.compactMap { $0.authority?.attribution }
+        }
+
+        var seen = Set<String>()
+        return credits.filter { seen.insert($0).inserted }
     }
 }

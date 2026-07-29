@@ -109,8 +109,8 @@ struct NASRIngestor {
                     sql: """
                     INSERT OR REPLACE INTO airport
                     (id, icao_id, name, city, state, country, lat, lon, elevation_ft,
-                     mag_var, tpa_ft, site_type, facility_use, ownership, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     mag_var, tpa_ft, site_type, kind, facility_use, ownership, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     arguments: [
                         id,
@@ -124,6 +124,7 @@ struct NASRIngestor {
                         magVar,
                         base.double(row, "TPA"),
                         base.value(row, "SITE_TYPE_CODE"),
+                        AirportKind.fromNASR(siteTypeCode: base.value(row, "SITE_TYPE_CODE")).rawValue,
                         base.value(row, "FACILITY_USE_CODE"),
                         base.value(row, "OWNERSHIP_TYPE_CODE"),
                         base.value(row, "ARPT_STATUS"),

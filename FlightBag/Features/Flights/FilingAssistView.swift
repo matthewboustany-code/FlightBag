@@ -57,10 +57,19 @@ struct FilingAssistView: View {
             }
 
             Section {
-                Link(destination: URL(string: "https://www.1800wxbrief.com")!) {
-                    Label("Open 1800wxbrief.com", systemImage: "safari")
+                // The handoff target is the only regional part of filing.
+                // Offering a US portal for an EDDF→LFPG plan would send a
+                // pilot somewhere that cannot accept it; saving a draft and
+                // validating still work anywhere.
+                if Jurisdiction.forIdentifier(plan.departure).supports(.assistedFiling) {
+                    Link(destination: URL(string: "https://www.1800wxbrief.com")!) {
+                        Label("Open 1800wxbrief.com", systemImage: "safari")
+                    }
+                    .accessibilityIdentifier("filing.wxbrief")
+                } else {
+                    CapabilityNotice(capability: .assistedFiling)
+                        .accessibilityIdentifier("filing.unsupportedRegion")
                 }
-                .accessibilityIdentifier("filing.wxbrief")
 
                 Button {
                     Task { await saveDraft() }

@@ -86,7 +86,14 @@ struct MapHomeView: View {
             // The compact bottom card covers this corner; hide rather than
             // stack.
             if !(inspection != nil && sizeClass == .compact) {
-                statusStrip
+                // Credit sits directly above the status strip rather than in
+                // its own corner: both anchor bottom-leading, and overlapping
+                // them clipped the attribution — a credit that cannot be read
+                // does not satisfy the licence that demands it.
+                VStack(alignment: .leading, spacing: 4) {
+                    attributionStrip
+                    statusStrip
+                }
             }
         }
         .overlay(alignment: sizeClass == .compact ? .bottom : .leading) {
@@ -225,6 +232,11 @@ struct MapHomeView: View {
             layers.availableCharts = environment.chartStore.availableCharts()
             layers.availableBasemaps = environment.chartStore.availableBasemaps()
         }
+        // Chart sources arrive with the manifest, so the map picks up a new
+        // authority on the next fetch rather than the next app release.
+        .task(id: environment.downloadCenter.manifest?.generatedAt) {
+            layers.chartSources = environment.downloadCenter.manifest?.chartSources ?? []
+        }
     }
 
     private var radarStatusText: String {
@@ -298,6 +310,31 @@ struct MapHomeView: View {
             }
         }
         environment.fisbRadarStore.ingest(NEXRADProduct(scope: .regional, blocks: blocks))
+    }
+
+    /// Source credit for whatever chart is on screen.
+    ///
+    /// A licence condition, not decoration: the OFMA General Users' Licence
+    /// and CC BY-NC both require the publisher to be named wherever their data
+    /// appears. It renders from the `.authority` sidecar stored beside each
+    /// tile set, so it survives with no manifest and no network — which is the
+    /// normal state in flight, and does not suspend the licence.
+    @ViewBuilder
+    private var attributionStrip: some View {
+        let credits = layers.activeChartAttribution
+        if !credits.isEmpty {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(credits, id: \.self) { Text($0) }
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(.thinMaterial, in: Capsule())
+            .padding(.leading, 12)
+            .allowsHitTesting(false)
+            .accessibilityIdentifier("map.attribution")
+        }
     }
 
     private var statusStrip: some View {

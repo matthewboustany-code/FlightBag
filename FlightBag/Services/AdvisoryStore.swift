@@ -40,14 +40,23 @@ final class AdvisoryStore {
         defer { isRefreshing = false }
 
         async let sigmetsResult = try? advisoryProvider.airSigmets()
+        async let internationalResult = try? advisoryProvider.internationalSigmets()
         async let airmetsResult = try? advisoryProvider.graphicalAirmets()
         async let tfrsResult = try? tfrProvider.activeTFRs()
 
-        let (sigmets, airmets, tfrs) = await (sigmetsResult, airmetsResult, tfrsResult)
+        let (sigmets, international, airmets, tfrs) = await (sigmetsResult, internationalResult, airmetsResult, tfrsResult)
         let now = Date()
 
-        if let sigmets {
-            airSigmets = sigmets.filter { $0.validTo > now }
+        // Domestic and international SIGMETs share one layer — a pilot wants
+        // "what hazards are here", not two toggles. They degrade
+        // independently, so an outage in one still shows the other. Merged on
+        // id because FIRs adjacent to US airspace can appear in both feeds.
+        if sigmets != nil || international != nil {
+            var merged: [String: WeatherAdvisory] = [:]
+            for advisory in (sigmets ?? []) + (international ?? []) where advisory.validTo > now {
+                merged[advisory.id] = advisory
+            }
+            airSigmets = Array(merged.values).sorted { $0.id < $1.id }
         }
         if let airmets {
             gAirmets = airmets.filter { $0.expireTime > now }

@@ -12,6 +12,9 @@ struct ChartStore: Sendable {
         var cycleId: String
         var url: URL
         var kind: ChartKind
+        /// Who published it, from the `.authority` sidecar written at install.
+        /// nil for sideloaded sets, whose provenance we genuinely do not know.
+        var authority: DataAuthority?
     }
 
     private let cyclesRoot: URL
@@ -35,6 +38,36 @@ struct ChartStore: Sendable {
         scanTileSets { $0.hasPrefix("basemap") }
     }
 
+    /// What kind of chart a tile set is.
+    ///
+    /// Prefers the `.kind` sidecar `DownloadCenter` writes from the manifest's
+    /// `contentKind`, which is the authority. Falls back to inferring from the
+    /// filename for sideloaded charts and for sets installed before the
+    /// sidecar existed — that inference is substring-based and only reliable
+    /// for FAA naming, which is exactly why the manifest value wins.
+    static func kind(for url: URL, fileName: String) -> ChartKind {
+        if let data = try? Data(contentsOf: url.appendingPathExtension("kind")),
+           let raw = String(data: data, encoding: .utf8),
+           let contentKind = DownloadProduct.ContentKind(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
+           let kind = ChartKind(contentKind: contentKind) {
+            return kind
+        }
+        return ChartKind.kind(forFileName: fileName)
+    }
+
+    /// Who published a tile set, from the sidecar `DownloadCenter` writes.
+    ///
+    /// Deliberately nil rather than `.faa` when absent: a sideloaded chart has
+    /// unknown provenance, and defaulting it to the FAA would print a credit
+    /// that might be wrong while hiding one that is required.
+    static func authority(for url: URL) -> DataAuthority? {
+        guard let data = try? Data(contentsOf: url.appendingPathExtension("authority")),
+              let raw = String(data: data, encoding: .utf8)
+        else { return nil }
+        let authority = DataAuthority(rawValue: raw.trimmingCharacters(in: .whitespacesAndNewlines))
+        return authority == .unknown ? nil : authority
+    }
+
     private func scanTileSets(matching include: (String) -> Bool) -> [ChartSet] {
         let fileManager = FileManager.default
         guard let cycles = try? fileManager.contentsOfDirectory(atPath: cyclesRoot.path) else { return [] }
@@ -46,11 +79,13 @@ struct ChartStore: Sendable {
                 // Keep only the newest cycle's copy of a given chart name.
                 let name = displayName(for: file)
                 guard !sets.contains(where: { $0.name == name }) else { continue }
+                let url = tilesDir.appendingPathComponent(file)
                 sets.append(ChartSet(
                     name: name,
                     cycleId: cycle,
-                    url: tilesDir.appendingPathComponent(file),
-                    kind: ChartKind.kind(forFileName: file)
+                    url: url,
+                    kind: Self.kind(for: url, fileName: file),
+                    authority: Self.authority(for: url)
                 ))
             }
         }

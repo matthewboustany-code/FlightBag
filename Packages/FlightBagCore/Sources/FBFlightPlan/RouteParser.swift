@@ -5,7 +5,15 @@ import FBModels
 /// The app implements this with the GRDB aviation database; the server with
 /// its own copy; tests with an in-memory dictionary.
 public protocol WaypointResolving: Sendable {
-    func resolveWaypoint(identifier: String) async throws -> ResolvedWaypoint?
+    /// Resolve a route token to a point.
+    ///
+    /// `near` is the last point already resolved on this route, and exists
+    /// because navaid identifiers are only unique within a region, not
+    /// globally: with worldwide data roughly a third of them collide ("LON"
+    /// is both London and Londrina). Picking arbitrarily puts a route leg on
+    /// the wrong continent, so resolvers must prefer the nearest candidate
+    /// when an anchor is available.
+    func resolveWaypoint(identifier: String, near: Coordinate?) async throws -> ResolvedWaypoint?
     /// True when the identifier is a published airway (e.g. "V163", "J24", "Q22", "T254").
     func isAirway(identifier: String) async throws -> Bool
     /// The airway's full ordered point list, empty when unknown. Resolvers
@@ -15,6 +23,11 @@ public protocol WaypointResolving: Sendable {
 
 extension WaypointResolving {
     public func airwayPoints(identifier: String) async throws -> [ResolvedWaypoint] { [] }
+
+    /// Resolvers that don't disambiguate by position can ignore the anchor.
+    public func resolveWaypoint(identifier: String) async throws -> ResolvedWaypoint? {
+        try await resolveWaypoint(identifier: identifier, near: nil)
+    }
 }
 
 public struct ResolvedWaypoint: Codable, Sendable, Hashable {
@@ -91,6 +104,10 @@ public struct RouteParser: Sendable {
     public func parse(_ route: String) async throws -> ParsedRoute {
         var elements: [ParsedRoute.Element] = []
         let tokens = route.uppercased().split(separator: " ").map(String.init)
+        // The last point we placed, used to disambiguate identifiers that
+        // repeat around the world. A route is a chain, so the previous point
+        // is a good anchor: the next one is rarely a continent away.
+        var anchor: Coordinate?
 
         for token in tokens {
             if token == "DCT" {
@@ -99,14 +116,16 @@ public struct RouteParser: Sendable {
             }
             if let latLon = Self.parseLatLon(token) {
                 elements.append(.waypoint(ResolvedWaypoint(identifier: token, coordinate: latLon, kind: .latLon)))
+                anchor = latLon
                 continue
             }
             if try await resolver.isAirway(identifier: token) {
                 elements.append(.airway(token, via: []))
                 continue
             }
-            if let waypoint = try await resolver.resolveWaypoint(identifier: token) {
+            if let waypoint = try await resolver.resolveWaypoint(identifier: token, near: anchor) {
                 elements.append(.waypoint(waypoint))
+                anchor = waypoint.coordinate
             } else {
                 elements.append(.unresolved(token))
             }

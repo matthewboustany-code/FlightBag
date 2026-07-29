@@ -1,20 +1,41 @@
 import MapKit
 import UIKit
+import FBModels
 
-/// Streams FAA chart tiles and keeps the chart visible past the service's
-/// deepest published zoom by cropping and upscaling parent tiles — MapKit
-/// never resamples rasters on its own, so without this a chart goes blank
-/// exactly when a pilot zooms in (worst on IFR High, which stops at z9
-/// while Retina rendering requests z+1).
+/// Streams chart tiles from whichever authority's service a `ChartSource`
+/// names, and keeps the chart visible past that service's deepest published
+/// zoom by cropping and upscaling parent tiles — MapKit never resamples
+/// rasters on its own, so without this a chart goes blank exactly when a pilot
+/// zooms in (worst on IFR High, which stops at z9 while Retina rendering
+/// requests z+1).
 final class StreamingChartOverlay: MKTileOverlay {
     private let nativeMaxZ: Int
+    /// Kept so the map can credit the source — several licences require it.
+    let source: ChartSource
 
-    init(kind: ChartKind) {
-        nativeMaxZ = kind.streamingZoomRange.upperBound
-        super.init(urlTemplate: kind.streamingURLTemplate)
+    init(source: ChartSource, streaming: ChartSource.Streaming) {
+        self.source = source
+        nativeMaxZ = streaming.zoomRange.upperBound
+        super.init(urlTemplate: streaming.urlTemplate)
         canReplaceMapContent = false
-        minimumZ = kind.streamingZoomRange.lowerBound
+        minimumZ = streaming.zoomRange.lowerBound
         // No maximumZ: deeper levels are synthesized from nativeMaxZ tiles.
+    }
+
+    /// Convenience for the common path: resolve the best source for a chart
+    /// kind, or nil when nothing streams it (open flightmaps, for one, ships
+    /// MBTiles and runs no tile service).
+    convenience init?(
+        kind: ChartKind,
+        regionIds: Set<String> = [],
+        manifestSources: [ChartSource] = []
+    ) {
+        guard let source = ChartSource.streamingSource(
+            for: kind.contentKind,
+            regionIds: regionIds,
+            manifestSources: manifestSources
+        ), let streaming = source.streaming else { return nil }
+        self.init(source: source, streaming: streaming)
     }
 
     nonisolated override func loadTile(at path: MKTileOverlayPath, result: @escaping @Sendable (Data?, (any Error)?) -> Void) {

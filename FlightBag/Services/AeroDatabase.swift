@@ -86,6 +86,44 @@ final class AeroDatabase: Sendable {
         var displayIdentifier: String { icaoId ?? id }
     }
 
+    /// How many aerodromes and how many countries the installed database
+    /// actually holds, for the search screen's empty state.
+    ///
+    /// Read rather than hardcoded: the previous fixed "19,000+" copy went
+    /// stale the moment worldwide data landed and told every non-US pilot the
+    /// app did not cover them.
+    func coverageSummary() async throws -> (airports: Int, countries: Int) {
+        let landingFacility = landingFacilityPredicate
+        return try await dbQueue.read { db in
+            let airports = try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM airport a WHERE \(landingFacility)"
+            ) ?? 0
+            let countries = try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(DISTINCT country) FROM airport a WHERE \(landingFacility)"
+            ) ?? 0
+            return (airports, countries)
+        }
+    }
+
+    /// SQL predicate for "this row is an aeroplane landing facility", used by
+    /// search ranking and by both spatial queries.
+    ///
+    /// Schema 5 added the normalized `kind` column precisely because the older
+    /// `site_type = 'A'` test is a NASR-only idiom: OurAirports writes
+    /// `large_airport`/`heliport` there instead, so on a worldwide database
+    /// that test matches nothing outside the US and quietly empties the map.
+    /// Databases already downloaded at v4 keep the old behaviour rather than
+    /// failing on a column they do not have — they are US-only anyway, so the
+    /// two agree on their contents.
+    ///
+    /// Interpolated rather than bound because SQLite cannot parameterise a
+    /// column name; the string is a compile-time constant with no input in it.
+    private var landingFacilityPredicate: String {
+        schemaVersion >= 5 ? "a.kind = 'airport'" : "a.site_type = 'A'"
+    }
+
     func search(_ text: String, limit: Int = 50) async throws -> [SearchResult] {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
@@ -95,6 +133,7 @@ final class AeroDatabase: Sendable {
             .map { "\"\($0.replacingOccurrences(of: "\"", with: ""))\"*" }
             .joined(separator: " ")
         let exact = trimmed.uppercased()
+        let landingFacility = self.landingFacilityPredicate
 
         return try await dbQueue.read { db in
             try Row.fetchAll(
@@ -106,7 +145,7 @@ final class AeroDatabase: Sendable {
                 WHERE airport_fts MATCH ?
                 ORDER BY
                     CASE WHEN a.id = ? OR a.icao_id = ? THEN 0 ELSE 1 END,
-                    CASE a.site_type WHEN 'A' THEN 0 ELSE 1 END,
+                    CASE WHEN \(landingFacility) THEN 0 ELSE 1 END,
                     rank
                 LIMIT ?
                 """,
@@ -118,7 +157,8 @@ final class AeroDatabase: Sendable {
     }
 
     func airportsNear(latitude: Double, longitude: Double, spanDegrees: Double = 1.0, limit: Int = 50) async throws -> [SearchResult] {
-        try await dbQueue.read { db in
+        let landingFacility = self.landingFacilityPredicate
+        return try await dbQueue.read { db in
             try Row.fetchAll(
                 db,
                 sql: """
@@ -126,7 +166,7 @@ final class AeroDatabase: Sendable {
                 FROM airport_rtree r
                 JOIN airport a ON a.rowid = r.id
                 WHERE r.min_lat >= ? AND r.max_lat <= ? AND r.min_lon >= ? AND r.max_lon <= ?
-                  AND a.site_type = 'A'
+                  AND \(landingFacility)
                 ORDER BY (a.lat - ?) * (a.lat - ?) + (a.lon - ?) * (a.lon - ?)
                 LIMIT ?
                 """,
@@ -167,7 +207,8 @@ final class AeroDatabase: Sendable {
         maxTier: Int,
         limit: Int
     ) async throws -> [MapAirport] {
-        try await dbQueue.read { db in
+        let landingFacility = self.landingFacilityPredicate
+        return try await dbQueue.read { db in
             try Row.fetchAll(
                 db,
                 sql: """
@@ -184,7 +225,7 @@ final class AeroDatabase: Sendable {
                     FROM airport_rtree r
                     JOIN airport a ON a.rowid = r.id
                     WHERE r.min_lat >= ? AND r.max_lat <= ? AND r.min_lon >= ? AND r.max_lon <= ?
-                      AND a.site_type = 'A'
+                      AND \(landingFacility)
                 )
                 WHERE tier <= ?
                 ORDER BY tier, (lat - ?) * (lat - ?) + (lon - ?) * (lon - ?)
@@ -462,16 +503,16 @@ extension AeroDatabase: WaypointResolving {
     /// fixes, 4-letter are airports, 1–3 letter are navaids — with fallbacks
     /// so "SAT" (airport and VORTAC) still resolves either way. Ambiguous
     /// identifiers prefer CONUS sites; airway context refines the rest.
-    func resolveWaypoint(identifier: String) async throws -> ResolvedWaypoint? {
+    func resolveWaypoint(identifier: String, near anchor: Coordinate?) async throws -> ResolvedWaypoint? {
         let ident = identifier.uppercased()
         let attempts: [() async throws -> ResolvedWaypoint?]
         switch ident.count {
         case 5:
             attempts = [{ try await self.fix(ident) }, { try await self.airportWaypoint(ident) }]
         case 4:
-            attempts = [{ try await self.airportWaypoint(ident) }, { try await self.fix(ident) }, { try await self.navaid(ident) }]
+            attempts = [{ try await self.airportWaypoint(ident) }, { try await self.fix(ident) }, { try await self.navaid(ident, near: anchor) }]
         default:
-            attempts = [{ try await self.navaid(ident) }, { try await self.airportWaypoint(ident) }, { try await self.fix(ident) }]
+            attempts = [{ try await self.navaid(ident, near: anchor) }, { try await self.airportWaypoint(ident) }, { try await self.fix(ident) }]
         }
         for attempt in attempts {
             if let waypoint = try await attempt() { return waypoint }
@@ -526,17 +567,39 @@ extension AeroDatabase: WaypointResolving {
         }
     }
 
-    private func navaid(_ ident: String) async throws -> ResolvedWaypoint? {
+    /// Navaid identifiers are unique only within a region. Worldwide, about a
+    /// third of them collide — "LON" is London *and* Londrina, "FFM" is
+    /// Frankfurt *and* Fergus Falls — so with an anchor we take the nearest
+    /// candidate, and without one we fall back to the CONUS preference that
+    /// served the US-only database.
+    private func navaid(_ ident: String, near anchor: Coordinate? = nil) async throws -> ResolvedWaypoint? {
         try await dbQueue.read { db in
-            try Row.fetchOne(
-                db,
-                sql: """
+            let sql: String
+            var arguments: StatementArguments = [ident]
+            if let anchor {
+                // Ordering by squared degrees is enough to pick a winner and
+                // avoids trigonometry in SQLite; longitude is cosine-scaled so
+                // the comparison stays sane away from the equator.
+                sql = """
+                SELECT id, name, lat, lon FROM navaid WHERE id = ?
+                ORDER BY (lat - ?) * (lat - ?)
+                       + ((lon - ?) * (lon - ?)) * ?
+                LIMIT 1
+                """
+                let cosLat = cos(anchor.latitude * .pi / 180)
+                arguments += [
+                    anchor.latitude, anchor.latitude,
+                    anchor.longitude, anchor.longitude,
+                    cosLat * cosLat,
+                ]
+            } else {
+                sql = """
                 SELECT id, name, lat, lon FROM navaid WHERE id = ?
                 ORDER BY CASE WHEN (lat > 48 AND lon < -125) OR (lat < 30 AND lon < -150) THEN 1 ELSE 0 END
                 LIMIT 1
-                """,
-                arguments: [ident]
-            ).map { row in
+                """
+            }
+            return try Row.fetchOne(db, sql: sql, arguments: arguments).map { row in
                 ResolvedWaypoint(
                     identifier: row["id"],
                     name: row["name"],

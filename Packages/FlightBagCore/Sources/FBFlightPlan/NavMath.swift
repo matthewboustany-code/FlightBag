@@ -25,6 +25,14 @@ public enum NavMath {
         return bearing < 0 ? bearing + 360 : bearing
     }
 
+    /// Apply magnetic variation to a true course, east positive — the sign
+    /// convention `Airport.magneticVariation` and `WorldMagneticModel` both
+    /// use. Result is normalised to 0..<360.
+    public static func magneticCourse(trueCourse: Double, variation: Double) -> Double {
+        let course = (trueCourse - variation).truncatingRemainder(dividingBy: 360)
+        return course < 0 ? course + 360 : course
+    }
+
     /// Estimated time en route.
     public static func ete(distanceNM: Double, groundSpeedKt: Double) -> TimeInterval? {
         guard groundSpeedKt > 0 else { return nil }

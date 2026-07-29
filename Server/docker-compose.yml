@@ -18,6 +18,15 @@ services:
       - "${FLIGHTBAG_PORT:-8080}:8080"
     volumes:
       - "${FLIGHTBAG_ARTIFACTS_DIR:-./Public/artifacts}:/app/Public/artifacts"
+    # `restart: unless-stopped` only restarts a process that *exits*. A Vapor
+    # server that is up but wedged would otherwise sit there serving nothing,
+    # and the app's only symptom is downloads quietly failing.
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/v1/manifest"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
   ingest:
     profiles: ["ingest"]
@@ -33,6 +42,11 @@ services:
       FLIGHTBAG_IFR_LOW_PANELS: "${FLIGHTBAG_IFR_LOW_PANELS:-none}"
       FLIGHTBAG_IFR_HIGH_PANELS: "${FLIGHTBAG_IFR_HIGH_PANELS:-none}"
       FLIGHTBAG_BASEMAP: "${FLIGHTBAG_BASEMAP:-auto}"
+      # Every scope knob must be listed here explicitly: compose only
+      # substitutes ${...} into this block, so a variable set in .env but
+      # missing from it silently never reaches the container.
+      FLIGHTBAG_OFM_FIRS: "${FLIGHTBAG_OFM_FIRS:-none}"
+      FLIGHTBAG_GLOBAL_AIRPORTS: "${FLIGHTBAG_GLOBAL_AIRPORTS:-1}"
       FLIGHTBAG_MIN_FREE_GB: "${FLIGHTBAG_MIN_FREE_GB:-50}"
     volumes:
       - "${FLIGHTBAG_ARTIFACTS_DIR:-./Public/artifacts}:/app/Public/artifacts"

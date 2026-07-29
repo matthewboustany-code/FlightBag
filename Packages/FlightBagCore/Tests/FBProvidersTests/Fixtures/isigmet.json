@@ -1,0 +1,122 @@
+[
+ {
+  "icaoId": "VABB",
+  "firId": "VABF",
+  "firName": "VABF MUMBAI",
+  "receiptTime": "2026-07-27T17:24:29.047Z",
+  "validTimeFrom": 1785201300,
+  "validTimeTo": 1785215700,
+  "seriesId": "C01",
+  "hazard": "TS",
+  "qualifier": "EMBD",
+  "base": null,
+  "top": 50000,
+  "geom": "AREA",
+  "coords": [
+   {
+    "lon": 60.067,
+    "lat": -4.7
+   },
+   {
+    "lon": 60.067,
+    "lat": 2.55
+   },
+   {
+    "lon": 65.033,
+    "lat": 3.517
+   },
+   {
+    "lon": 64.867,
+    "lat": -4.567
+   },
+   {
+    "lon": 60.067,
+    "lat": -4.7
+   }
+  ],
+  "dir": "-",
+  "spd": "0",
+  "chng": "NC",
+  "rawSigmet": "WSIN90 VABB 280115\nVABF SIGMET C01 VALID 280115/280515 VABB-\nVABF MUMBAI FIR EMBD TS FCST WI S0442 E06004 - N0233 E06004 - N0331\nE06502 - S0434 E06452 - S0442 E06004 TOP FL500 STNR NC="
+ },
+ {
+  "icaoId": "WAAA",
+  "firId": "WAAF",
+  "firName": "WAAF UJUNG PANDANG",
+  "receiptTime": "2026-07-27T22:20:44.970Z",
+  "validTimeFrom": 1785190800,
+  "validTimeTo": 1785212400,
+  "seriesId": "16",
+  "hazard": "VA",
+  "qualifier": "LEWOTOBI",
+  "base": 0,
+  "top": 9000,
+  "geom": "AREA",
+  "coords": [
+   {
+    "lon": 122.783,
+    "lat": -8.6
+   },
+   {
+    "lon": 122.717,
+    "lat": -8.567
+   },
+   {
+    "lon": 122.85,
+    "lat": -8.333
+   },
+   {
+    "lon": 123,
+    "lat": -8.333
+   },
+   {
+    "lon": 123.017,
+    "lat": -8.45
+   }
+  ],
+  "dir": "NE",
+  "spd": "10",
+  "chng": "INTSF",
+  "rawSigmet": "WVID21 WAAA 272220\nWAAF SIGMET 16 VALID 272220/280420 WAAA-\nWAAF UJUNG PANDANG  FIR VA\nERUPTION MT LEWOTOBI PSN S0833 E12246 VA CLD OBS AT 2200Z WI S0836\nE12247 - S0834 E12243 - S0820 E12251 - S0820 E12300 - S0827 E12301 -\nS0836 E12247 SFC/FL090 MOV NE 10KT INTSF="
+ },
+ {
+  "icaoId": "FAOR",
+  "firId": "FACA",
+  "firName": "FACA CAPE TOWN",
+  "receiptTime": "2026-07-27T18:48:29.268Z",
+  "validTimeFrom": 1785204000,
+  "validTimeTo": 1785218400,
+  "seriesId": "C01",
+  "hazard": "TURB",
+  "qualifier": "SEV",
+  "base": 0,
+  "top": 8000,
+  "geom": "AREA",
+  "coords": [
+   {
+    "lon": 18.7,
+    "lat": -30.5
+   },
+   {
+    "lon": 21.267,
+    "lat": -30.5
+   },
+   {
+    "lon": 23.6,
+    "lat": -31.267
+   },
+   {
+    "lon": 24.917,
+    "lat": -33.633
+   },
+   {
+    "lon": 21.6,
+    "lat": -33.85
+   }
+  ],
+  "dir": null,
+  "spd": null,
+  "chng": null,
+  "rawSigmet": "WSZA21 FAOR 280210\nFACA SIGMET C01 VALID 280200/280600 FAOR-\nFACA CAPE TOWN FIR SEV TURB FCST WI\nS3030 E01842 - S3030 E02116 - S3116 E02336 - S3338 E02455 -\nS3351 E02136 - S3445 E02000 - S3308 E01830 - S3222 E01915 SFC/FL080="
+ }
+]

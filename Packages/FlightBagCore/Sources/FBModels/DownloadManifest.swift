@@ -13,25 +13,46 @@ public struct DownloadManifest: Codable, Sendable, Hashable {
     public var products: [DownloadProduct]
     /// Products for the next cycle when the FAA has published it early.
     public var nextCycleProducts: [DownloadProduct]
+    /// Where each chart layer's tiles come from. Defaulted so a manifest
+    /// written before chart sources existed still decodes — the app falls
+    /// back to its built-in FAA descriptors when this is empty.
+    public var chartSources: [ChartSource]
 
     public init(
         generatedAt: Date,
         cycle: String,
         regions: [Region] = [],
         products: [DownloadProduct],
-        nextCycleProducts: [DownloadProduct] = []
+        nextCycleProducts: [DownloadProduct] = [],
+        chartSources: [ChartSource] = []
     ) {
         self.generatedAt = generatedAt
         self.cycle = cycle
         self.regions = regions
         self.products = products
         self.nextCycleProducts = nextCycleProducts
+        self.chartSources = chartSources
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        generatedAt = try container.decode(Date.self, forKey: .generatedAt)
+        cycle = try container.decode(String.self, forKey: .cycle)
+        regions = try container.decodeIfPresent([Region].self, forKey: .regions) ?? []
+        products = try container.decode([DownloadProduct].self, forKey: .products)
+        nextCycleProducts = try container.decodeIfPresent([DownloadProduct].self, forKey: .nextCycleProducts) ?? []
+        chartSources = try container.decodeIfPresent([ChartSource].self, forKey: .chartSources) ?? []
     }
 }
 
 public struct DownloadProduct: Codable, Sendable, Hashable, Identifiable {
     public var id: String
     public var contentKind: ContentKind
+    /// Who published this artifact. Travels with the product so the app can
+    /// credit the source offline — several licences require attribution
+    /// wherever the data is shown, and an EFB shows charts precisely when it
+    /// cannot reach the manifest.
+    public var authority: DataAuthority
     /// Display title, e.g. "San Antonio Sectional", "Texas Approach Plates".
     public var title: String
     public var cycle: String
@@ -61,6 +82,7 @@ public struct DownloadProduct: Codable, Sendable, Hashable, Identifiable {
     public init(
         id: String,
         contentKind: ContentKind,
+        authority: DataAuthority = .faa,
         title: String,
         cycle: String,
         regionIds: [String] = [],
@@ -71,6 +93,7 @@ public struct DownloadProduct: Codable, Sendable, Hashable, Identifiable {
     ) {
         self.id = id
         self.contentKind = contentKind
+        self.authority = authority
         self.title = title
         self.cycle = cycle
         self.regionIds = regionIds
@@ -78,5 +101,21 @@ public struct DownloadProduct: Codable, Sendable, Hashable, Identifiable {
         self.sizeBytes = sizeBytes
         self.sha256 = sha256
         self.expirationDate = expirationDate
+    }
+
+    /// Products published before `authority` existed decode as FAA, which is
+    /// what every one of them was.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        contentKind = try container.decode(ContentKind.self, forKey: .contentKind)
+        authority = try container.decodeIfPresent(DataAuthority.self, forKey: .authority) ?? .faa
+        title = try container.decode(String.self, forKey: .title)
+        cycle = try container.decode(String.self, forKey: .cycle)
+        regionIds = try container.decodeIfPresent([String].self, forKey: .regionIds) ?? []
+        url = try container.decode(URL.self, forKey: .url)
+        sizeBytes = try container.decode(Int64.self, forKey: .sizeBytes)
+        sha256 = try container.decode(String.self, forKey: .sha256)
+        expirationDate = try container.decodeIfPresent(Date.self, forKey: .expirationDate)
     }
 }
