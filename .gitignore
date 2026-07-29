@@ -14,6 +14,8 @@ DerivedData/
 .env
 .env.*
 !Server/.env.example
+# FAA NMS onboarding pack: the spreadsheet in it is the client id/secret.
+onboardingontonmsapiinc0028461/
 
 # Server deployment scratch (ingest intermediates, cron logs)
 Server/ingest-work/

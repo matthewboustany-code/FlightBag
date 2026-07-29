@@ -22,13 +22,19 @@ import FBModels
         try await app.asyncShutdown()
     }
 
-    /// The test environment has no FAA credentials, which is also the state a
-    /// self-hoster starts in. It must degrade to an explicit "not configured"
-    /// rather than a 500 or, worse, an empty list that reads as "no NOTAMs".
+    /// Having no FAA credentials is the state a self-hoster starts in. It must
+    /// degrade to an explicit "not configured" rather than a 500 or, worse, an
+    /// empty list that reads as "no NOTAMs".
     @Test func notamsReportUnconfiguredWithoutCredentials() async throws {
         let app = try await Application.make(.testing)
         do {
             try await configure(app)
+            // Cleared explicitly rather than relying on the environment being
+            // bare: once Server/.env holds real credentials, `configure` picks
+            // them up here too and this test would call the live FAA service —
+            // spending rate budget and failing whenever the network is down.
+            app.notamProvider = nil
+
             try await app.testing().test(.GET, "v1/airports/KAUS/notams") { response async throws in
                 #expect(response.status == .ok)
                 let body = try response.content.decode(AirportNotamsResponse.self)
