@@ -32,6 +32,8 @@ the project history; this records the load-bearing choices.
 | Units | Canonical storage (hPa, SM, ft, NM, kt); `UnitPreferences` converts only for display, `Jurisdiction` picks the default | A preference must never rewrite what an observation said — wind stays in knots, the ICAO reporting unit, everywhere |
 | Rules vs. provenance | `DataAuthority` = who published a row; `Jurisdiction`/`RuleSet` = whose rules apply there | The two diverge as soon as data stops being FAA-only: OurAirports is the *authority* for a German aerodrome, EASA its *jurisdiction* |
 | Magnetic variation | Computed from the embedded NOAA WMM, **except** where a state publishes one (NASR), which wins | Variation is a field, not an airport property — it swings by tens of degrees along a route, and no non-US source in the stack carries one, so without a model every magnetic course outside the US is missing. The published figure still wins where it exists, because that is what the runways were charted against |
+| NOTAMs | Server-proxied only (`/v1/airports/:id/notams`), never app-to-FAA | NMS authenticates with OAuth client credentials, which cannot ship in an IPA and cannot be rotated once leaked. The token lives on the server; the app's offline story is its own disk cache plus the FIS-B uplink |
+| NOTAM request rate | Paced server-side to ~1 call/second (`NMSRequestPacer`); the app goes on batching four at a time | Apigee spike-arrests NMS at one request per second, burst one — undocumented in the onboarding pack, found only by calling staging. Pacing sits above the token store and below the route cache, so how many airports the app asks for at once stays a UI decision. The cost is a cold 12-leg briefing taking ~13 s; the 15-minute cache absorbs the repeat. The production limit is unconfirmed |
 | Offline | Hard requirement from Phase 1 | Cockpit connectivity assumption is zero |
 
 ## Operational cadence
@@ -48,7 +50,19 @@ effective instant. UI shows freshness badges everywhere.
    fast-follow, not a Phase 3 blocker: assisted filing (handoff to
    1800wxbrief) is the shipping path. Registering as a business entity (LLC)
    strengthens the ask and is worth considering for liability regardless.
-2. **FAA NOTAM API key** — free registration at external.faa.gov.
+2. **FAA NMS credentials** — **pre-production granted 2026-07-28**
+   (`FLIGHTBAG_NOTAM_ENV=staging`); production still outstanding. Onboarding
+   runs through NOTAMS@faa.gov, who hand off to the NOTAM Service Center
+   (7-AWA-NAIMES@faa.gov, 866-466-1336); credentials arrive as a
+   password-protected spreadsheet with the password in a separate email, where
+   `Key` is the client id and `Secret` the client secret. Production is a
+   **second request**, made only after staging validation, to the same NSC
+   address or phone. NOTAMs ship without any of it (the endpoint reports
+   `configured: false` and the app says so); credentials are what turn the
+   feature on. Note the target is the **NOTAM Management Service**, not the
+   older `external-api.faa.gov` FNS API: NMS replaced the US NOTAM System on
+   2026-04-18 and FNS retires later in 2026. Pre-production serves **test
+   data** — good enough to prove the integration, never to fly on.
 3. **Apple multicast entitlement** (`com.apple.developer.networking.multicast`)
    — required only to receive *broadcast* GDL90. Mainstream receivers
    (Stratux, Sentry) unicast to each DHCP client, which needs no

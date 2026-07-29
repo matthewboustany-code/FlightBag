@@ -1,7 +1,7 @@
 import Foundation
 
-/// One record from a FIS-B generic text product (413): a METAR, TAF,
-/// PIREP, or winds-aloft report.
+/// One record from a FIS-B text product: a METAR, TAF, PIREP, winds-aloft
+/// report (product 413) or a NOTAM (product 8).
 public struct FISBTextReport: Sendable, Hashable {
     public enum Kind: String, Sendable, Hashable, CaseIterable {
         case metar = "METAR"
@@ -10,7 +10,21 @@ public struct FISBTextReport: Sendable, Hashable {
         case tafAmendment = "TAF.AMD"
         case pirep = "PIREP"
         case windsAloft = "WINDS"
+        // Product 8. The uplink distinguishes the NOTAM series in the leading
+        // token; all four are NOTAMs to a reader, but the series is worth
+        // keeping — FDC carries regulatory notices and TFR carries airspace.
+        case notamD = "NOTAM-D"
+        case notamFDC = "NOTAM-FDC"
+        case notamTFR = "NOTAM-TFR"
+        case notam = "NOTAM"
         case other = ""
+
+        public var isNotam: Bool {
+            switch self {
+            case .notamD, .notamFDC, .notamTFR, .notam: true
+            default: false
+            }
+        }
     }
 
     public let kind: Kind
@@ -35,7 +49,9 @@ public struct FISBTextReport: Sendable, Hashable {
             }
     }
 
-    static func parse(record: String) -> FISBTextReport {
+    /// Classifies one already-decoded record. Public so consumers can build
+    /// a report from text without going through a DLAC payload.
+    public static func parse(record: String) -> FISBTextReport {
         let tokens = record.split(separator: " ", omittingEmptySubsequences: true)
         guard let first = tokens.first else {
             return FISBTextReport(kind: .other, station: "", text: record)

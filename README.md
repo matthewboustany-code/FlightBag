@@ -34,6 +34,12 @@ plates and coded procedures remain US-only — see [Data scope](#data-scope).
   same `FilingService` protocol.
 - **Airports** — FTS5 search (diacritic-folding, so "Koln" finds "Köln"),
   airport detail with raw/decoded METAR & TAF, plates viewer.
+- **NOTAMs** — per-airport and as a route briefing across every airport on a
+  flight, from the FAA's NOTAM Management Service through the FlightBag
+  server; drawable ones (centre + radius) render as map circles alongside
+  TFRs. Cached on disk for offline, and topped up in the air from the FIS-B
+  uplink. Every empty state says *why* it's empty — "no NOTAMs published"
+  and "couldn't ask" are never shown the same way.
 - **Units** — inHg/hPa, statute miles/metres, feet/metres, knots/km-h,
   following the country you're viewing by default or pinned in Settings.
   Both US and ICAO report forms decode (`P6SM` and `9999`, `A2992` and
@@ -80,7 +86,8 @@ receiver picks it up.
 cd Server && swift run App serve
 ```
 
-Serves `/v1/manifest` and `/v1/airports/:id/weather`, plus artifacts under
+Serves `/v1/manifest`, `/v1/airports/:id/weather` and
+`/v1/airports/:id/notams`, plus artifacts under
 `Public/artifacts/`. The manifest is empty until an ingest run has produced
 artifacts. Ingestion (NASR, d-TPP, CIFP, chart tiles, plate bundles) is
 designed to run in Docker — GDAL comes from the image — and is configured
@@ -110,6 +117,7 @@ cron, and troubleshooting, see [Server/DEPLOY.md](Server/DEPLOY.md).
 | VFR charts | US + 19 European/African FIRs | FAA sectionals; [open flightmaps](https://openflightmaps.org) elsewhere (OFMA General Users' Licence — attribution required and shown on the map). Download-only: OFM ships MBTiles and runs no tile service |
 | Approach plates, coded procedures (SID/STAR), airways, IFR enroute | **US only** | FAA d-TPP / CIFP / aeronav. Eurocontrol's EAD is access-controlled and Nav Canada sells its charts, so neither can be redistributed from a self-hosted server |
 | TFRs, winds aloft, FIS-B uplink weather | **US only** | No equivalent free service exists elsewhere. 1090ES ADS-B traffic still works worldwide — only the uplink is US-specific. |
+| NOTAMs | **US only** | FAA NOTAM Management Service (NMS). Needs a client id/secret on the server (NOTAMS@faa.gov) — the OAuth credentials can't ship in the app, so NOTAMs are the one feature that requires a FlightBag server. |
 
 Assisted filing hands off to 1800wxbrief, which is a US portal.
 

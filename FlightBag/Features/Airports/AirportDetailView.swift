@@ -29,7 +29,10 @@ struct AirportDetailView: View {
                             CapabilityNotice(capability: .plates)
                         }
                     }
-                    notamSection(detail)
+                    NotamSection(
+                        station: weatherStation(for: detail),
+                        jurisdiction: jurisdiction(for: detail)
+                    )
                 }
             } else if loadFailed {
                 ContentUnavailableView("Airport Not Found", systemImage: "questionmark.circle")
@@ -176,18 +179,6 @@ struct AirportDetailView: View {
                         .multilineTextAlignment(.trailing)
                 }
             }
-        }
-    }
-
-    private func notamSection(_ detail: AeroDatabase.AirportDetail) -> some View {
-        Section("NOTAMs") {
-            Label {
-                Text("NOTAMs arrive with the FlightBag server deployment (FAA NOTAM API key required). Check official sources.")
-                    .font(.callout)
-            } icon: {
-                Image(systemName: "exclamationmark.bubble")
-            }
-            .foregroundStyle(.secondary)
         }
     }
 

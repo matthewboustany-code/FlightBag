@@ -80,7 +80,10 @@ public struct FISBAPDU: Sendable {
                 return .malformed(productID: productID)
             }
             return .nexrad(product)
-        case 413:
+        case 8, 413:
+            // Product 8 (NOTAMs) and 413 (generic text) share the DLAC
+            // record encoding; the leading token in each record says which
+            // kind it is, so one decoder serves both.
             return .text(FISBTextReport.reports(fromDLACPayload: payload))
         default:
             return .unhandled(productID: productID)

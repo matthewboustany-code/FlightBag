@@ -82,6 +82,8 @@ actor WeatherStore {
                 entry.taf = Taf(station: ICAOIdentifier(station), raw: report.text)
             case .pirep, .windsAloft, .other:
                 continue  // Not surfaced by the airport weather screen.
+            case .notamD, .notamFDC, .notamTFR, .notam:
+                continue  // NotamStore's business; AppEnvironment routes them there.
             }
             // The uplink rebroadcasts on a loop; never age-regress an entry.
             guard receivedAt >= entry.fetchedAt else { continue }

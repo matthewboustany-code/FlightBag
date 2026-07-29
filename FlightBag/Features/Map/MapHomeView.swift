@@ -144,6 +144,11 @@ struct MapHomeView: View {
                 layers.airmetTangoEnabled = true
                 layers.airmetZuluEnabled = true
             }
+            // Separate from -mapDemoAdvisories: NOTAM circles need a route
+            // loaded to have anything to draw, so they're opted into on their own.
+            if defaults.bool(forKey: "mapDemoNotams") {
+                layers.notamsEnabled = true
+            }
             let demoAltitude = defaults.double(forKey: "mapDemoAltitudeFilter")
             if demoAltitude > 0 {
                 layers.advisoryAltitudeFilterEnabled = true
@@ -533,6 +538,16 @@ private struct LayersPanel: View {
                 advisoryToggle("AIRMET Sierra (IFR/Mtn)", isOn: $layers.airmetSierraEnabled, category: .airmetSierra, count: airmetCount(.sierra))
                 advisoryToggle("AIRMET Tango (Turb/Wind)", isOn: $layers.airmetTangoEnabled, category: .airmetTango, count: airmetCount(.tango))
                 advisoryToggle("AIRMET Zulu (Icing)", isOn: $layers.airmetZuluEnabled, category: .airmetZulu, count: airmetCount(.zulu))
+                advisoryToggle(
+                    "NOTAMs (route airports)",
+                    isOn: $layers.notamsEnabled,
+                    category: .notam,
+                    count: AdvisoryOverlayBuilder.visibleNotams(
+                        layers: layers,
+                        notams: environment.mapNotams,
+                        store: store
+                    ).count
+                )
 
                 Toggle("Filter by altitude", isOn: $layers.advisoryAltitudeFilterEnabled)
                     .accessibilityIdentifier("layers.altitudeFilter")
@@ -569,6 +584,19 @@ private struct LayersPanel: View {
                 await store.refreshIfStale()
             }
         }
+        // Route NOTAMs are fetched when the layer is switched on or the route
+        // changes underneath it — not on every panel open, which would
+        // re-query the server for a layer the pilot isn't using.
+        .task(id: NotamLayerKey(enabled: layers.notamsEnabled, route: environment.activeMapRoute?.label)) {
+            if layers.notamsEnabled {
+                await environment.refreshMapNotams()
+            }
+        }
+    }
+
+    private struct NotamLayerKey: Equatable {
+        let enabled: Bool
+        let route: String?
     }
 
     private var store: AdvisoryStore { environment.advisoryStore }

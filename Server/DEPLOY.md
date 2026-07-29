@@ -72,6 +72,10 @@ What that first build is most likely to catch, in rough order:
      `docker compose run --rm --entrypoint id server`.
    - Scope vars (`FLIGHTBAG_SECTIONALS`, `FLIGHTBAG_REGIONS`, IFR panels) —
      start small; see "Widening scope" below.
+   - `FLIGHTBAG_NOTAM_CLIENT_ID` / `_SECRET` (optional) — FAA NOTAM
+     Management Service credentials, requested by emailing NOTAMS@faa.gov.
+     Leave them unset and everything else still works: the app shows
+     "NOTAMs unavailable" rather than an empty list. See "NOTAMs" below.
 3. Build and start:
 
    ```sh
@@ -100,6 +104,30 @@ What that first build is most likely to catch, in rough order:
 5. Point the app at the server: Settings → server URL →
    `http://<NAS-LAN-IP>:8080` (or launch arg `-serverBaseURL`). The
    Downloads tab's regions should populate from the manifest.
+
+### NOTAMs
+
+NOTAMs are the one app feature that *requires* this server. The FAA's NOTAM
+Management Service (NMS, which replaced the US NOTAM System on 2026-04-18)
+authenticates with OAuth 2.0 client credentials; those must not ship in an
+app binary, so the token is fetched and refreshed here and the app reads
+`/v1/airports/:id/notams`.
+
+1. Email NOTAMS@faa.gov to request a client id and secret.
+2. Put them in `.env` as `FLIGHTBAG_NOTAM_CLIENT_ID` /
+   `FLIGHTBAG_NOTAM_CLIENT_SECRET`, then `docker compose up -d server`.
+3. Check it:
+
+   ```sh
+   curl http://<NAS-LAN-IP>:8080/v1/airports/KAUS/notams
+   ```
+
+   `"configured": false` means the server did not see credentials — check the
+   startup log, which says which way it resolved. Responses are cached per
+   station for 15 minutes, so a repeated call should not hit the FAA again.
+
+`FLIGHTBAG_NOTAM_ENV=fit` (or `staging`) points at the FAA's test
+environments instead of production.
 
 ### Building the image elsewhere
 

@@ -197,6 +197,13 @@ let metarText = "METAR KAUS 151953Z 18010KT 10SM SCT045 33/17 A3002\u{1E}"
     + "METAR KDAL 151953Z 17012G18KT 10SM FEW060 34/16 A2999\u{1E}"
     + "TAF KDAL 151740Z 1518/1618 18014KT P6SM SKC"
 
+/// FIS-B product 8. Same DLAC text encoding as the weather products — only
+/// the product ID and the leading series token differ.
+let notamText = "NOTAM-D KAUS 01/005 TWY A CLSD BTN TWY B AND TWY F\u{1E}"
+    + "NOTAM-D KAUS 01/006 OBST CRANE ERECTED 1.2NM SW APCH END RWY 18L (ASR 1234567) 620FT AGL\u{1E}"
+    + "NOTAM-FDC KAUS 1/2345 SPECIAL SECURITY INSTRUCTIONS IN EFFECT\u{1E}"
+    + "NOTAM-D KDAL 02/001 RWY 13L/31R CLSD"
+
 /// A small storm cell painted over blocks near the ownship circuit,
 /// drifting east one block every broadcast.
 func nexradFrames(tick: Int) -> [[UInt8]] {
@@ -241,6 +248,13 @@ while true {
             productID: 413, hours: 19, minutes: 53, payload: DLAC.encode(metarText)
         ))
         sender.send(GDL90Deframer.frame(uplinkPayload(infoFrames: [textFrame])))
+    }
+    // NOTAMs uplink less often than weather, as they do in the real service.
+    if tick % 15 == 0 {
+        let notamFrame = FISBEncoding.infoFrame(body: FISBEncoding.apdu(
+            productID: 8, hours: 19, minutes: 53, payload: DLAC.encode(notamText)
+        ))
+        sender.send(GDL90Deframer.frame(uplinkPayload(infoFrames: [notamFrame])))
     }
     if tick % 10 == 0 {
         for frame in nexradFrames(tick: tick) {

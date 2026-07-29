@@ -9,6 +9,7 @@ enum AdvisoryCategory: String, CaseIterable, Identifiable {
     case airmetSierra
     case airmetTango
     case airmetZulu
+    case notam
 
     var id: String { rawValue }
 
@@ -19,6 +20,7 @@ enum AdvisoryCategory: String, CaseIterable, Identifiable {
         case .airmetSierra: "AIRMET Sierra (IFR/Mtn)"
         case .airmetTango: "AIRMET Tango (Turb/Wind)"
         case .airmetZulu: "AIRMET Zulu (Icing)"
+        case .notam: "NOTAMs"
         }
     }
 
@@ -29,11 +31,20 @@ enum AdvisoryCategory: String, CaseIterable, Identifiable {
         case .airmetSierra: .systemPurple
         case .airmetTango: .systemBrown
         case .airmetZulu: .systemTeal
+        // Deliberately not red: a NOTAM circle is an advisory area, not a
+        // restriction, and must not be mistaken for a TFR at a glance.
+        case .notam: .systemOrange
         }
     }
 
     var fillAlpha: CGFloat {
-        self == .tfr ? 0.18 : 0.10
+        switch self {
+        case .tfr: 0.18
+        // NOTAM circles overlap heavily around a busy field; a light fill
+        // keeps the chart underneath readable.
+        case .notam: 0.06
+        default: 0.10
+        }
     }
 }
 
@@ -90,10 +101,53 @@ enum AdvisoryOverlayBuilder {
         }
     }
 
+    /// NOTAMs that can actually be drawn: active, with a published centre and
+    /// radius, and not already on the map as a TFR.
+    ///
+    /// The TFR check matters — `FAATFRProvider` sources from NOTAM data, so
+    /// without it a single restriction draws twice in two different colours,
+    /// which reads as two separate hazards.
+    @MainActor
+    static func visibleNotams(layers: MapLayersState, notams: [Notam], store: AdvisoryStore) -> [Notam] {
+        let tfrIds = Set(store.tfrs.map(\.id))
+        var seen = Set<String>()
+        return notams.filter { notam in
+            guard notam.mapCircle != nil, notam.isActive(), !tfrIds.contains(notam.id) else { return false }
+            // The same NOTAM can arrive for several route airports.
+            return seen.insert(notam.id).inserted
+        }
+    }
+
     /// Overlays for every enabled advisory category.
     @MainActor
-    static func overlays(layers: MapLayersState, store: AdvisoryStore) -> [AdvisoryPolygon] {
+    static func overlays(
+        layers: MapLayersState,
+        store: AdvisoryStore,
+        notams: [Notam] = []
+    ) -> [AdvisoryPolygon] {
         var result: [AdvisoryPolygon] = []
+
+        if layers.notamsEnabled {
+            for notam in visibleNotams(layers: layers, notams: notams, store: store) {
+                guard let circle = notam.mapCircle else { continue }
+                let limits = [
+                    notam.lowerLimitFt.map { "from \($0) ft" },
+                    notam.upperLimitFt.map { "to \($0) ft" },
+                ].compactMap(\.self).joined(separator: " ")
+                result.append(AdvisoryPolygon.make(
+                    coordinates: Self.circlePolygon(centre: circle.centre, radiusNM: circle.radiusNM),
+                    category: .notam,
+                    title: "NOTAM \(notam.id) · \(notam.location.rawValue)",
+                    subtitle: [
+                        limits.isEmpty ? nil : limits,
+                        notam.endIsEstimated
+                            ? "no end time"
+                            : notam.effectiveEnd.map { "until \(Self.time($0))" },
+                    ].compactMap(\.self).joined(separator: " · "),
+                    detail: notam.text
+                ))
+            }
+        }
 
         if layers.tfrsEnabled {
             for (tfr, area) in visibleTFRAreas(layers: layers, store: store) {
@@ -156,5 +210,29 @@ enum AdvisoryOverlayBuilder {
 
     private static func time(_ date: Date) -> String {
         date.formatted(date: .omitted, time: .shortened)
+    }
+
+    /// A circle as a polygon ring.
+    ///
+    /// NOTAM areas are published as centre + radius, but drawing them as
+    /// `MKCircle` would need a second renderer and a second tap path in the
+    /// map Coordinator. Approximating as a polygon reuses `AdvisoryPolygon`
+    /// wholesale — same styling, same tap-to-inspect, same z-ordering. At 48
+    /// segments the error against a true circle is under 0.3%, far below
+    /// chart resolution.
+    static func circlePolygon(centre: Coordinate, radiusNM: Double, segments: Int = 48) -> [Coordinate] {
+        let radiusDegrees = radiusNM / 60.0
+        let latitudeRadians = centre.latitude * .pi / 180
+        // Longitude degrees shrink with latitude; without this the circle
+        // draws as an ellipse everywhere but the equator.
+        let longitudeScale = max(cos(latitudeRadians), 0.01)
+
+        return (0..<segments).map { step in
+            let angle = 2 * .pi * Double(step) / Double(segments)
+            return Coordinate(
+                latitude: centre.latitude + radiusDegrees * cos(angle),
+                longitude: centre.longitude + radiusDegrees * sin(angle) / longitudeScale
+            )
+        }
     }
 }

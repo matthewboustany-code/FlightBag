@@ -165,7 +165,29 @@ struct FlightDetailView: View {
                 }
             }
             .accessibilityIdentifier("flight.navlog")
+
+            NavigationLink {
+                NotamBriefingView(flight: flight, parsedRoute: parsedRoute)
+            } label: {
+                LabeledContent("NOTAM Briefing") {
+                    let count = briefingStationCount
+                    Text(count == 0 ? "Needs airports" : "\(count) airport\(count == 1 ? "" : "s")")
+                }
+            }
+            .accessibilityIdentifier("flight.notamBriefing")
         }
+    }
+
+    /// Unique airports the briefing will query — departure, destination, and
+    /// any airport the route names.
+    private var briefingStationCount: Int {
+        var stations = Set<String>()
+        if !flight.departure.isEmpty { stations.insert(flight.departure.uppercased()) }
+        if !flight.destination.isEmpty { stations.insert(flight.destination.uppercased()) }
+        for waypoint in parsedRoute?.waypoints ?? [] where waypoint.kind == .airport {
+            stations.insert(waypoint.identifier.uppercased())
+        }
+        return stations.count
     }
 
     // MARK: Clearances

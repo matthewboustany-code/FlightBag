@@ -13,11 +13,22 @@ public protocol HTTPGetting: Sendable {
     /// default, which drops them — existing fixture clients keep working
     /// unchanged.
     func get(_ url: URL, headers: [String: String]) async throws -> Data
+
+    /// POST, for the one thing GET can't express: an OAuth token exchange
+    /// (the FAA NMS `client_credentials` grant). The default throws rather
+    /// than silently returning nothing, so a transport that hasn't
+    /// implemented it fails loudly at the call site instead of looking like
+    /// an empty response.
+    func post(_ url: URL, body: Data, headers: [String: String]) async throws -> Data
 }
 
 extension HTTPGetting {
     public func get(_ url: URL, headers: [String: String]) async throws -> Data {
         try await get(url)
+    }
+
+    public func post(_ url: URL, body: Data, headers: [String: String]) async throws -> Data {
+        throw HTTPError(statusCode: 405, url: url)
     }
 }
 
@@ -43,7 +54,17 @@ public struct URLSessionHTTPClient: HTTPGetting {
     }
 
     public func get(_ url: URL, headers: [String: String]) async throws -> Data {
+        try await send(url, method: "GET", body: nil, headers: headers)
+    }
+
+    public func post(_ url: URL, body: Data, headers: [String: String]) async throws -> Data {
+        try await send(url, method: "POST", body: body, headers: headers)
+    }
+
+    private func send(_ url: URL, method: String, body: Data?, headers: [String: String]) async throws -> Data {
         var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.httpBody = body
         request.setValue("FlightBag/1.0", forHTTPHeaderField: "User-Agent")
         for (field, value) in headers {
             request.setValue(value, forHTTPHeaderField: field)
