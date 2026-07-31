@@ -8,38 +8,65 @@ file — see [.env.example](.env.example).
 
 Status: the stack was authored and macOS-verified (through 2026-07, including
 a full `ingest-all` run producing a schema-5 database plus open flightmaps
-charts) but **has not yet had a real Docker build or GDAL run** — there is no
-container runtime on the dev Mac. Expect the first `docker compose build` on
-the NAS to be the shakedown for the Linux build.
+charts). As of 2026-07-30 the image **also builds and serves on Docker**
+(Docker 29.6.2 / compose v5.3.1 on an arm64 Mac): `docker compose build server`
+compiles `App` clean with no errors, `docker compose up -d server` reaches the
+`healthy` healthcheck, and `/v1/manifest` returns the 2607 manifest. GDAL 3.8.4
+and `unzip`/`zip`/`curl` are all present on `PATH` in the runtime image.
 
-What that first build is most likely to catch, in rough order:
+The **chart pipeline has now run too**: an `ingest-all` scoped to the single
+San_Antonio sectional completed clean, exercising the full
+`gdal_translate -expand rgba` → `gdalwarp` → MBTiles → `gdaladdo` chain for the
+first time. It produced a 254 MB / 7 222-tile MBTiles (zoom 6–12, EPSG:3857)
+with a matching `.sha256`, and the server serves it with range requests
+(`206 Partial Content`), which the app's download resume depends on.
+
+**The band-count question in item 2 below is settled: it reports 4.**
+`gdalwarp -dstalpha` treats the `-expand rgba` alpha as source alpha rather
+than adding a fifth band, so the MBTILES driver is happy and `-dstalpha`
+should stay.
+
+Still unproven: d-TPP plate bundling, the basemap build, IFR enroute panels,
+and NASR/d-TPP/CIFP ingestion on Linux — that run reused the existing
+`aero.sqlite` and was scoped to charts only.
+
+Note also that the Swift build does long `git` fetches during
+`swift package resolve` (vapor alone took ~8 min on a slow link); if the Docker
+VM restarts mid-build the CLI can hang indefinitely on an orphaned buildkit
+session — kill it and rerun, the fetch cache survives.
+
+What a wider ingest run is most likely to catch, in rough order:
 
 1. **Linux Foundation gaps.** Every file under `Sources/App/Ingest/` carries
    the `#if canImport(FoundationNetworking)` guard, and all downloads go
    through `URLSession.data(for:)` rather than the async `download(from:)`
    family, whose swift-corelibs coverage is thinner. Both are deliberate; keep
-   new ingestors to the same pattern.
-2. **GDAL — the least-proven part of the stack.** The tile pipeline shells
-   out to `gdal_translate`/`gdalwarp`/`gdaladdo`, and GDAL is not installed on
-   the dev machine, so the chart path has never executed anywhere. Every flag
-   it uses is valid in the GDAL 3.8.4 that Ubuntu 24.04 ships, and none is
-   deprecated or newer than 3.8 — version skew is not the risk; the risk is
-   that the chain has never run. `ingest-all` now preflights the tools and
-   logs the version before downloading anything, and skips that check when no
-   charts are in scope. Bring the database up first and add one sectional
-   second, so the first chart failure costs one download rather than fifty.
+   new ingestors to the same pattern. The chart download path is proven on
+   Linux (the San_Antonio zip pulled fine); NASR/d-TPP/CIFP downloads are not
+   yet — those are the larger, longer transfers where corelibs is likelier to
+   differ from Darwin.
+2. **GDAL.** The tile pipeline shells out to
+   `gdal_translate`/`gdalwarp`/`gdaladdo`, all present in the image as GDAL
+   3.8.4, and the sectional chain is now proven end to end. `ingest-all`
+   preflights the tools and logs the version before downloading anything, and
+   skips that check when no charts are in scope. Still bring the database up
+   first and add one sectional second when widening scope, so a chart failure
+   costs one download rather than fifty.
 
-   The one step worth eyeballing on the first successful sectional is band
-   count. `-expand rgba` yields 4 bands, and `gdalwarp -dstalpha` should treat
-   the existing alpha as source alpha rather than adding a fifth — the MBTILES
-   driver accepts only 1, 2, 3 or 4 bands and will refuse 5. Confirm with:
+   Band count is settled for sectionals: the pipeline yields **4** (RGBA), so
+   `gdalwarp -dstalpha` is correctly treating the `-expand rgba` alpha as
+   source alpha rather than adding a fifth band, which the MBTILES driver
+   would refuse. Re-check it on the first IFR enroute panel, whose source
+   rasters differ:
 
    ```sh
-   gdalinfo <workdir>/<chart>_<cycle>/mercator.tif | grep -c '^Band '
+   gdalinfo <artifacts>/<cycle>/tiles/<chart>.mbtiles | grep -c '^Band '
    ```
 
    4 is correct. If it reports 5, drop `-dstalpha` from the `gdalwarp` call in
    `TilePipeline.buildChart` — the alpha from `-expand rgba` is already there.
+   (The `mercator.tif` intermediate is cleaned up on success, so inspect the
+   finished MBTiles rather than the workdir.)
 3. **Volume permissions.** The container runs as a non-root `vapor` user; see
    the `chown` note in step 2 below.
 
@@ -165,12 +192,32 @@ run also refreshes the manifest so next-cycle products graduate to current.
 
 ## Widening scope
 
-Edit the scope vars in `.env` and rerun
-`docker compose --profile ingest run --rm ingest` — skip-if-exists means only
-the newly added charts/regions build, then the manifest refreshes. Forcing a
-specific cycle: append `--cycle 2607` to the run command. Rebuilding one
-artifact: delete its file (and `.sha256` sidecar) from the artifact tree and
-rerun.
+Edit the scope vars in `.env`, **delete the target cycle's `.complete`
+marker**, and rerun `docker compose --profile ingest run --rm ingest` —
+skip-if-exists means only the newly added charts/regions build, then the
+manifest refreshes.
+
+The marker step is not optional and is easy to miss: `ingest-all` returns
+immediately when `{artifacts}/{cycle}/.complete` exists and the manifest is
+already current, so widening scope without removing it is a silent no-op that
+prints "already complete and manifest current — nothing to do". Same applies
+to rebuilding one artifact: delete its file *and* its `.sha256` sidecar *and*
+the `.complete` marker, then rerun.
+
+```sh
+rm Public/artifacts/<cycle>/.complete
+docker compose --profile ingest run --rm ingest
+```
+
+Scope can also be overridden per-run without touching `.env` — shell
+variables win over the `.env` file:
+
+```sh
+FLIGHTBAG_SECTIONALS=San_Antonio FLIGHTBAG_REGIONS=none FLIGHTBAG_BASEMAP=never \
+  docker compose --profile ingest run --rm ingest
+```
+
+Forcing a specific cycle: append `--cycle 2607` to the run command.
 
 ## Later: TLS / domain
 

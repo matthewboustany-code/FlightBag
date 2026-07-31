@@ -7,6 +7,10 @@
 # NAS task scheduler) triggers it daily via scripts/ingest-cron.sh and the
 # ingest-all command no-ops until a new cycle's FAA data is published.
 
+# Without this the project name defaults to the directory name ("Server"),
+# which collides with any other stack on the host that does the same.
+name: flightbag
+
 services:
   server:
     build:
@@ -16,6 +20,13 @@ services:
     restart: unless-stopped
     ports:
       - "${FLIGHTBAG_PORT:-8080}:8080"
+    # `.env` is only interpolated into this file — it is not injected into the
+    # container. Anything configure.swift reads via Environment.get must be
+    # forwarded explicitly here, or the server starts with it unset.
+    environment:
+      FLIGHTBAG_NOTAM_CLIENT_ID: "${FLIGHTBAG_NOTAM_CLIENT_ID:-}"
+      FLIGHTBAG_NOTAM_CLIENT_SECRET: "${FLIGHTBAG_NOTAM_CLIENT_SECRET:-}"
+      FLIGHTBAG_NOTAM_ENV: "${FLIGHTBAG_NOTAM_ENV:-production}"
     volumes:
       - "${FLIGHTBAG_ARTIFACTS_DIR:-./Public/artifacts}:/app/Public/artifacts"
     # `restart: unless-stopped` only restarts a process that *exits*. A Vapor
