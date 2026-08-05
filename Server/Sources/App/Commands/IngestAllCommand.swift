@@ -189,12 +189,27 @@ struct IngestAllCommand: AsyncCommand {
         console.info("Ingest-all for cycle \(cycle.id) → \(cycleDir.path)")
 
         try await buildDatabase(cycle: cycle, cycleDir: cycleDir, workDir: workDir, console: console)
-        try await buildTiles(scope: scope, cycle: cycle, artifactsRoot: artifactsRoot, workDir: workDir, pipeline: pipeline, console: console)
+        let chartFailures = try await buildTiles(scope: scope, cycle: cycle, artifactsRoot: artifactsRoot, workDir: workDir, pipeline: pipeline, console: console)
         try await OpenFlightMapsIngestor(workDirectory: workDir) { console.info($0) }
             .run(cycle: cycle, firs: scope.openFlightMapsFIRs, into: cycleDir)
         try await buildBasemap(policy: scope.basemap, cycle: cycle, artifactsRoot: artifactsRoot, workDir: workDir, pipeline: pipeline, console: console)
         try await buildPlates(regions: scope.plateRegions, cycle: cycle, cycleDir: cycleDir, workDir: workDir, console: console)
         try writeManifest(artifactsRoot: artifactsRoot, baseURL: baseURL, currentCycle: manifestCycle, console: console)
+
+        // Charts that failed are published-as-absent: the manifest above lists
+        // only what exists, so the app offers the rest and stays usable. Do not
+        // write .complete — that marker is what makes the next run a no-op, and
+        // withholding it is exactly what makes tomorrow's cron retry the gaps.
+        guard chartFailures.isEmpty else {
+            for failure in chartFailures {
+                console.warning("  \(failure)")
+            }
+            throw IngestError("""
+                \(chartFailures.count) of the charts in scope failed for cycle \(cycle.id). \
+                Everything else is published and the manifest is current; the cycle is \
+                deliberately left incomplete so the next run retries only these.
+                """)
+        }
 
         try ISO8601DateFormatter().string(from: Date())
             .write(to: marker, atomically: true, encoding: .utf8)
@@ -285,7 +300,17 @@ struct IngestAllCommand: AsyncCommand {
         console.success("db/aero.sqlite published")
     }
 
-    private func buildTiles(scope: Scope, cycle: DataCycle, artifactsRoot: URL, workDir: URL, pipeline: TilePipeline, console: Console) async throws {
+    /// Builds every chart in scope and returns the ones that failed.
+    ///
+    /// Unlike a plate bundle, charts publish individually and the manifest is
+    /// generated from what is actually on disk, so a missing sectional is
+    /// simply not offered rather than silently absent from inside a zip. That
+    /// makes it safe — better, in fact — to finish the run and report at the
+    /// end: everything that did build gets published and is usable today, and
+    /// the caller withholds the `.complete` marker so the next run retries only
+    /// what is missing.
+    @discardableResult
+    private func buildTiles(scope: Scope, cycle: DataCycle, artifactsRoot: URL, workDir: URL, pipeline: TilePipeline, console: Console) async throws -> [String] {
         var sources: [TilePipeline.Source] = scope.sectionals.map { .sectional(chart: $0) }
         sources += scope.ifrLowPanels.map { .enrouteLow(panel: $0) }
         sources += scope.ifrHighPanels.map { .enrouteHigh(panel: $0) }
@@ -297,6 +322,7 @@ struct IngestAllCommand: AsyncCommand {
             console.info("GDAL: \(try pipeline.preflightGDAL())")
         }
 
+        var failures: [String] = []
         for source in sources {
             // Dated editions may belong to the prior cycle (56-day cadence);
             // check both candidate homes before paying for a network probe.
@@ -309,19 +335,27 @@ struct IngestAllCommand: AsyncCommand {
                 console.info("tiles/\(source.artifactFileName) exists (\(existing.id)) — skipping")
                 continue
             }
-            let editionCycle = try await pipeline.resolveEditionCycle(for: source, requested: cycle)
-            let temp = workDir.appendingPathComponent(source.artifactFileName)
-            try await pipeline.run(source: source, cycle: editionCycle, output: temp.path)
-            let final = artifactsRoot.appendingPathComponent("\(editionCycle.id)/tiles/\(source.artifactFileName)")
-            try publish(temp, to: final)
-            if source.isFiftySixDayEdition {
-                try publish(
-                    URL(fileURLWithPath: temp.path + ".expires"),
-                    to: URL(fileURLWithPath: final.path + ".expires")
-                )
+            do {
+                let editionCycle = try await pipeline.resolveEditionCycle(for: source, requested: cycle)
+                let temp = workDir.appendingPathComponent(source.artifactFileName)
+                try await pipeline.run(source: source, cycle: editionCycle, output: temp.path)
+                let final = artifactsRoot.appendingPathComponent("\(editionCycle.id)/tiles/\(source.artifactFileName)")
+                try publish(temp, to: final)
+                if source.isFiftySixDayEdition {
+                    try publish(
+                        URL(fileURLWithPath: temp.path + ".expires"),
+                        to: URL(fileURLWithPath: final.path + ".expires")
+                    )
+                }
+                console.success("tiles/\(source.artifactFileName) published under \(editionCycle.id)")
+            } catch {
+                // One bad chart used to cost the whole run — including the
+                // plates and manifest that come after it. Record and continue.
+                console.warning("tiles/\(source.artifactFileName) FAILED: \(error)")
+                failures.append("\(source.artifactFileName): \(error)")
             }
-            console.success("tiles/\(source.artifactFileName) published under \(editionCycle.id)")
         }
+        return failures
     }
 
     private func buildBasemap(policy: String, cycle: DataCycle, artifactsRoot: URL, workDir: URL, pipeline: TilePipeline, console: Console) async throws {

@@ -118,22 +118,72 @@ struct TilePipeline {
         throw IngestError("No edition found for \(source.cacheStem) at \(Source.dateComponent(for: requested)) or the prior cycle")
     }
 
+    private static let maxAttempts = 3
+
+    /// A cached zip counts only if it still starts with the PK signature, so a
+    /// truncated leftover is re-fetched instead of failing later in `unzip`.
+    private static func cachedZipIsUsable(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        return looksLikeZip((try? handle.read(upToCount: 4)) ?? Data())
+    }
+
+    private static func looksLikeZip(_ head: Data) -> Bool {
+        head.prefix(2).elementsEqual([0x50, 0x4B])  // "PK"
+    }
+
+    /// Downloads one chart zip, retrying only what retrying can fix.
+    private func fetchChart(_ remote: URL) async throws -> Data {
+        var lastReason = "no attempt made"
+        for attempt in 1...Self.maxAttempts {
+            var request = URLRequest(url: remote)
+            request.setValue("Mozilla/5.0 (Macintosh) FlightBag-Ingest/1.0", forHTTPHeaderField: "User-Agent")
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                if status == 200 {
+                    guard Self.looksLikeZip(data.prefix(4)) else {
+                        throw IngestError("HTTP 200 but body is not a zip (\(data.count) bytes)")
+                    }
+                    return data
+                }
+                // 4xx means the edition genuinely is not there — and edition
+                // resolution has already walked back a cycle by this point, so
+                // retrying cannot help.
+                if (400..<500).contains(status), status != 429 {
+                    throw IngestError("HTTP \(status)")
+                }
+                lastReason = "HTTP \(status)"
+            } catch let error as IngestError {
+                throw error
+            } catch {
+                lastReason = "\(error)"
+            }
+            if attempt < Self.maxAttempts {
+                try await Task.sleep(nanoseconds: UInt64(attempt) * 2_000_000_000)
+            }
+        }
+        throw IngestError("\(lastReason) after \(Self.maxAttempts) attempts")
+    }
+
     func run(source: Source, cycle: DataCycle, output: String) async throws {
         let chartDir = workDirectory.appendingPathComponent("charts", isDirectory: true)
         try FileManager.default.createDirectory(at: chartDir, withIntermediateDirectories: true)
 
         // 1. Download & extract.
         let zipURL = chartDir.appendingPathComponent("\(source.cacheStem)_\(cycle.id).zip")
-        if !FileManager.default.fileExists(atPath: zipURL.path) {
+        if !Self.cachedZipIsUsable(at: zipURL) {
             let remote = source.remoteURL(for: cycle)
             logger("Downloading \(remote.absoluteString)…")
-            var request = URLRequest(url: remote)
-            request.setValue("Mozilla/5.0 (Macintosh) FlightBag-Ingest/1.0", forHTTPHeaderField: "User-Agent")
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                throw IngestError("Chart download failed: HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
-            }
-            try data.write(to: zipURL)
+            let data = try await fetchChart(remote)
+            // Stage and rename: these are hundreds of megabytes, and a run
+            // killed mid-write would otherwise leave a truncated zip that the
+            // next run treats as cached.
+            let partial = zipURL.appendingPathExtension("partial")
+            try? FileManager.default.removeItem(at: partial)
+            try data.write(to: partial)
+            try? FileManager.default.removeItem(at: zipURL)
+            try FileManager.default.moveItem(at: partial, to: zipURL)
         } else {
             logger("Using cached \(zipURL.lastPathComponent)")
         }
