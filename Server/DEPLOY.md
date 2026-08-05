@@ -6,41 +6,91 @@ production pipeline (`ingest-all`). Everything is orchestrated by
 [docker-compose.yml](docker-compose.yml) and configured through a `.env`
 file — see [.env.example](.env.example).
 
-Status: the stack was authored and macOS-verified (through 2026-07, including
-a full `ingest-all` run producing a schema-5 database plus open flightmaps
-charts). As of 2026-07-30 the image **also builds and serves on Docker**
-(Docker 29.6.2 / compose v5.3.1 on an arm64 Mac): `docker compose build server`
-compiles `App` clean with no errors, `docker compose up -d server` reaches the
-`healthy` healthcheck, and `/v1/manifest` returns the 2607 manifest. GDAL 3.8.4
-and `unzip`/`zip`/`curl` are all present on `PATH` in the runtime image.
+## Current state
 
-The **chart pipeline has now run too**: an `ingest-all` scoped to the single
-San_Antonio sectional completed clean, exercising the full
-`gdal_translate -expand rgba` → `gdalwarp` → MBTiles → `gdaladdo` chain for the
-first time. It produced a 254 MB / 7 222-tile MBTiles (zoom 6–12, EPSG:3857)
-with a matching `.sha256`, and the server serves it with range requests
-(`206 Partial Content`), which the app's download resume depends on.
+**Every stage of the pipeline is proven on Linux.** Cycle 2608 was built
+full-scope on the production host — a Debian 13 / Proxmox Docker VM
+(`debian4docker`, amd64, 4 cores / 8 GB) running Docker 29.7.1 and compose
+v5.4.0 — from an empty artifact tree, on 2026-08-05:
 
-**The band-count question in item 2 below is settled: it reports 4.**
-`gdalwarp -dstalpha` treats the `-expand rgba` alpha as source alpha rather
-than adding a fifth band, so the MBTILES driver is happy and `-dstalpha`
-should stay.
+| Stage | Result |
+| :-- | :-- |
+| Database (NASR + d-TPP + CIFP + OurAirports) | schema 5; 64 007 airports, 9 129 navaids, 24 046 plates, 4 010 CIFP procedures / 73 314 legs |
+| VFR sectionals | 53 / 53, no failures |
+| IFR enroute panels | 48 / 48 (36 low + 12 high), no failures |
+| Basemap | Natural Earth, 251 MB |
+| Plate bundles | 51 state regions in scope |
 
-**NASR/d-TPP/CIFP ingestion is now proven on Linux too.** On 2026-08-05 a
-database-only run on the Debian/Proxmox Docker VM (`debian4docker`, amd64) built
-a schema-5 `aero.sqlite` from scratch: 64 007 airports, 9 129 navaids, 24 090
-plates, 4 010 CIFP procedures / 73 314 legs, published with a matching `.sha256`
-and served with range requests (`206`).
+Cycle 2607 was built the same way at a narrower scope (2 sectionals, US-TX
+plates, basemap) and served end to end to the app.
 
-That run surfaced one genuine Linux-only defect, now fixed in
-`DTPPIngestor.swift` — see "The d-TPP 10 MB parser limit" below.
+Everything is served over the LAN with matching `.sha256` and range requests
+(`206 Partial Content`), which the app's download resume depends on. GDAL 3.8.4,
+`unzip`/`zip`/`curl` are all on `PATH` in the runtime image.
 
-**Plate bundling and the basemap build are now proven too.** A full-scope run on
-the same VM published five products totalling 1.3 GB for cycle 2607: the
-database, both San_Antonio and Houston sectionals, the Natural Earth basemap,
-and a 567 MB US-TX plate bundle of 2 934 plates.
+The image also builds and serves on macOS/arm64 (Docker 29.6.2 / compose v5.3.1)
+— that was the original development path, and it is worth remembering that
+**macOS proves very little about Linux here**: every defect listed under "FAA
+data and platform quirks" below was invisible on Darwin.
 
-Still unproven: IFR enroute panels.
+Band count is settled at **4** (RGBA) for both sectionals and enroute panels, so
+`gdalwarp -dstalpha` is correctly treating the source alpha rather than adding a
+fifth band, which the MBTILES driver would refuse. Verify with:
+
+```sh
+gdalinfo <artifacts>/<cycle>/tiles/<chart>.mbtiles | grep -c '^Band '
+```
+
+## FAA data and platform quirks
+
+Five assumptions in this codebase turned out to be wrong the first time the
+pipeline ran for real. They are listed because the pattern matters more than the
+individual bugs: **the FAA's products are less uniform than they look, and a
+static per-product assumption is usually the thing that breaks.** Prefer asking
+the data.
+
+### Charts are 56-day; the database is 28-day
+
+VFR sectionals publish on a **56-day** cadence, exactly like IFR enroute panels.
+On roughly half the 28-day AIRAC cycles there is no new chart edition and the
+current one carries over. Cycle 2607 has a `07-09-2026` edition; the next is
+`09-03-2026`; there is nothing at `08-06-2026` (cycle 2608).
+
+Three places assumed sectionals were 28-day, and all three broke on 2608:
+
+- **Cycle detection.** `resolveTargetCycle` probed a sectional URL to decide
+  whether the FAA had published the next cycle. On an off cycle that 404s
+  forever, so `ingest-all` silently kept targeting the current cycle — a daily
+  cron would have sat on an expiring cycle and never rolled over. It now probes
+  the **d-TPP metafile**, which is genuinely 28-day. NASR would work too, but
+  `nfdc.faa.gov` answers **503 to HEAD** requests, so aeronav's metafile is the
+  only usable HEAD probe. (Use a ranged GET to check NASR by hand.)
+- **Edition resolution.** `resolveEditionCycle` only walked back a cycle for
+  enroute sources, so an all-sectionals run against 2608 died on the first
+  chart with `Chart download failed: HTTP 404`.
+- **`.expires` sidecars.** Only written for enroute panels. A sectional whose
+  edition lives under the prior cycle would have dropped out of the next
+  cycle's manifest entirely.
+
+`Source.isFiftySixDayEdition` now covers all three. The distinction that matters
+is *dated FAA chart* vs the Natural Earth basemap — not VFR vs IFR.
+
+### Not every chart is paletted
+
+`gdal_translate -expand rgba` is valid only on a raster with a colour table.
+VFR sectionals are 256-colour; **IFR enroute panels ship as straight RGB**
+(Band 1 Red, 2 Green, 3 Blue) and the expand step fails on them with
+`ERROR 1: Error : band 1 has no color table`. All 48 panels failed this way on
+the first full-scope run.
+
+The pipeline now asks `gdalinfo` whether band 1 has a colour table and expands
+only when it does, rather than keying off the product type. Panels log
+`Already RGB — skipping palette expansion`.
+
+This one hid for a while because `runIngestProcess` truncated stderr with
+`prefix(300)` and GDAL emits a ~290-character `EPSG:4269` warning on *every* FAA
+chart — so the real error was cut off and 48 panels failed with nothing in the
+log but a warning. It now reports the `ERROR` lines, or the tail.
 
 ### Withdrawn charts (DELETED_JOB)
 
@@ -51,24 +101,6 @@ two things went wrong: bundling eventually requested one and got a 404, and the
 app would have listed 43 charts that do not exist. They are now dropped at parse
 time. Expect the plate count to be slightly *lower* than the metafile's record
 count for this reason (24 047 vs 24 090 in 2607).
-
-### Plate bundling is fail-loud, not fail-fast
-
-A missing plate must never be shipped silently, so `PlateBundler`:
-
-- **Validates cached files**, not just their existence. A truncated PDF left by
-  an interrupted run (OOM kill, host suspend) is re-fetched rather than bundled.
-- **Checks the payload is a PDF.** aeronav can answer 200 with an HTML error
-  page; without this it would be zipped in as though it were a chart.
-- **Writes to a temp path and renames**, so an interrupted write cannot leave a
-  half-file that the next run mistakes for a cached one.
-- **Retries only what retrying fixes** — timeouts, resets, 5xx, 429. A 404 is
-  the FAA stating the URL is wrong; it fails immediately.
-- **Collects failures and reports them together** at the end of the region
-  rather than aborting on the first, so one run tells you about every bad plate
-  instead of making you re-run once per failure.
-- **Asserts completeness**: `fetched + cached` must equal the row count the
-  database claims for the region, or the bundle is not written.
 
 ### The d-TPP 10 MB parser limit
 
@@ -87,76 +119,106 @@ does not, regardless of BOM, CRLF, or element count.
 
 `DTPPMetafileParser.parse` now gates on whether the root element actually
 closed rather than on `parse()`'s return value. A truncated or malformed file
-never closes its root, so that stays a real failure. Plate count matches the
-metafile's record count exactly (24 090), confirming nothing is dropped.
+never closes its root, so that stays a real failure.
 
 **If another ingestor ever parses XML over 10 MB on Linux, it will hit this
 same wall** — apply the same pattern rather than assuming a bad download.
 
-Note also that the Swift build does long `git` fetches during
-`swift package resolve` (vapor alone took ~8 min on a slow link); if the Docker
-VM restarts mid-build the CLI can hang indefinitely on an orphaned buildkit
-session — kill it and rerun, the fetch cache survives.
+### `FLIGHTBAG_REGIONS=all` means US states
 
-What a wider ingest run is most likely to catch, in rough order:
+Terminal procedures are an FAA d-TPP product, so only US states have them.
+`ChartCatalog.regionIds` also carries the open flightmaps FIRs (`OFM-LOVV` and
+friends), and handing one of those to `PlateBundler` is a hard error. `all` now
+expands to plate-capable regions only. An explicit list naming a FIR still
+errors, which is correct — that is a typo, not a scope choice.
 
-1. **Linux Foundation gaps.** Every file under `Sources/App/Ingest/` carries
-   the `#if canImport(FoundationNetworking)` guard, and all downloads go
-   through `URLSession.data(for:)` rather than the async `download(from:)`
-   family, whose swift-corelibs coverage is thinner. Both are deliberate; keep
-   new ingestors to the same pattern. The chart download path is proven on
-   Linux (the San_Antonio zip pulled fine); NASR/d-TPP/CIFP downloads are not
-   yet — those are the larger, longer transfers where corelibs is likelier to
-   differ from Darwin.
-2. **GDAL.** The tile pipeline shells out to
-   `gdal_translate`/`gdalwarp`/`gdaladdo`, all present in the image as GDAL
-   3.8.4, and the sectional chain is now proven end to end. `ingest-all`
-   preflights the tools and logs the version before downloading anything, and
-   skips that check when no charts are in scope. Still bring the database up
-   first and add one sectional second when widening scope, so a chart failure
-   costs one download rather than fifty.
+## Failure and resume policy
 
-   Band count is settled for sectionals: the pipeline yields **4** (RGBA), so
-   `gdalwarp -dstalpha` is correctly treating the `-expand rgba` alpha as
-   source alpha rather than adding a fifth band, which the MBTILES driver
-   would refuse. Re-check it on the first IFR enroute panel, whose source
-   rasters differ:
+A full-scope run is 100+ chart downloads and ~24 000 plate PDFs over several
+hours. It is built to survive a bad artifact rather than discard the run:
 
-   ```sh
-   gdalinfo <artifacts>/<cycle>/tiles/<chart>.mbtiles | grep -c '^Band '
-   ```
+- **Charts and plate regions accumulate failures.** Each is its own artifact and
+  the manifest is generated from what is on disk, so a missing sectional is
+  simply not offered — the app stays usable and the gap is visible. The run
+  therefore continues to the end, writes the manifest, then reports every
+  failure and exits nonzero.
+- **`.complete` is withheld when anything failed.** That marker is what makes
+  the next run a no-op, so withholding it is what makes the next cron run retry
+  precisely the missing artifacts and nothing else.
+- **Plate *bundles* are different**: a zip must never ship incomplete, because
+  unlike a missing chart the gap is invisible from outside. `PlateBundler`
+  therefore collects every bad plate in the region, then fails the region rather
+  than writing a partial bundle, and **asserts completeness** — `fetched +
+  cached` must equal the row count the database claims for that region.
+- **Cached files are validated, not just counted.** A truncated PDF or chart zip
+  left by an interrupted run (OOM kill, host suspend) is re-fetched rather than
+  reused, so a bad cache heals itself instead of persisting across runs.
+- **Downloads retry only what retrying fixes** — timeouts, resets, 5xx, 429.
+  A 4xx is authoritative (edition resolution has already walked back a cycle by
+  then) and fails immediately.
+- **Payloads are sniffed** (`%PDF`, `PK`) so a 200-with-an-HTML-error-page is
+  never written, and staged to a temp path then renamed so an interrupted run
+  cannot leave a truncated file the next run treats as cached.
 
-   4 is correct. If it reports 5, drop `-dstalpha` from the `gdalwarp` call in
-   `TilePipeline.buildChart` — the alpha from `-expand rgba` is already there.
-   (The `mercator.tif` intermediate is cleaned up on success, so inspect the
-   finished MBTiles rather than the workdir.)
-3. **Volume permissions.** The container runs as a non-root `vapor` user; see
-   the `chown` note in step 2 below.
+So the normal response to a partial run is simply to run it again.
+
+## Platform notes
+
+- **Linux Foundation gaps.** Every file under `Sources/App/Ingest/` carries the
+  `#if canImport(FoundationNetworking)` guard, and all downloads go through
+  `URLSession.data(for:)` rather than the async `download(from:)` family, whose
+  swift-corelibs coverage is thinner. Both are deliberate — keep new ingestors
+  to the same pattern.
+- **GDAL** is shelled out to (`gdal_translate`/`gdalwarp`/`gdaladdo`, 3.8.4 in
+  the image). `ingest-all` preflights the tools and logs the version before
+  downloading anything, and skips that check when no charts are in scope.
+- **Volume permissions.** The container runs as non-root `vapor` = **uid 999**.
+  Bind-mounted host directories must be chowned to it; see step 2 below. The
+  same applies in reverse when clearing artifacts by hand — the host user cannot
+  delete uid-999 files, so go through a container:
+
+  ```sh
+  docker compose --profile ingest run --rm --entrypoint sh ingest \
+    -c "rm -f /app/Public/artifacts/<cycle>/<path>"
+  ```
+
+- **Builds.** `swift package resolve` does long `git` fetches (vapor alone took
+  ~8 min on a slow link). If the host restarts mid-build the CLI can hang
+  indefinitely on an orphaned buildkit session — kill it and rerun, the fetch
+  cache survives. Run long ingests detached (`setsid nohup … &`) so an SSH drop
+  or a workstation reboot cannot take them down.
 
 ## Prerequisites
 
 - Docker with the compose plugin (Container Manager on Synology, Apps on
   TrueNAS SCALE, etc. all provide it).
-- Disk: budget ~2–4 GB per sectional/panel MBTiles plus similar transient
-  workdir space, ~0.3–3 GB per state plate bundle, ~1 GB basemap.
-  "Everything" (53 sectionals + 48 IFR panels + 51 plate regions) is
-  roughly 100+ GB per cycle, and two cycles coexist during rollover —
-  scope accordingly via `.env`.
+- Disk, measured on the 2608 full-scope build rather than estimated: sectionals
+  and enroute panels run **~200–270 MB each** as MBTiles, plate bundles
+  ~50–600 MB per state (Texas is the big one at 567 MB / 2 934 plates), basemap
+  251 MB. **"Everything" is roughly 25–30 GB of artifacts per cycle**, plus a
+  similar-sized workdir download cache that `pruneWorkCaches` trims to the
+  current and previous cycle. Two cycles coexist during rollover, so budget
+  ~80 GB to be comfortable.
+
+  (An earlier revision of this doc guessed "100+ GB"; that was pessimistic by
+  about 4×.)
 - Memory: allow ~2 GB for ingest (chart zips are held in memory during
   download; GDAL adds its own working set). Don't set a low container limit.
+  A 4-core / 8 GB VM builds the whole of a cycle in a few hours.
 
-## First bring-up on the NAS
+## First bring-up on a new host
 
-1. Get the repo onto the NAS (git clone, or copy the tree — the image build
+1. Get the repo onto the host (git clone, or copy the tree — the image build
    needs `Server/` **and** `Packages/` plus the root `.dockerignore`,
    with the repo root as build context).
 2. `cd Server && cp .env.example .env` and edit:
-   - `FLIGHTBAG_BASE_URL` → `http://<NAS-LAN-IP>:8080`. This is baked into
+   - `FLIGHTBAG_BASE_URL` → `http://<HOST-LAN-IP>:8080`. This is baked into
      every product URL in `manifest.json`; if it's wrong, the app downloads
      from the wrong place. Changing it later requires re-running ingest
      (cheap — it only rebuilds the manifest once artifacts exist).
    - `FLIGHTBAG_ARTIFACTS_DIR` / `FLIGHTBAG_WORKDIR` → paths on the storage
-     pool. Both must be writable by the container's non-root user — if the
+     pool, and ideally outside the repo so a `git pull` never touches
+     multi-GB artifacts. Both must be writable by the container's non-root user — if the
      first run fails with permission errors, `chown -R` the two host
      directories to the uid shown by
      `docker compose run --rm --entrypoint id server`.
@@ -171,7 +233,7 @@ What a wider ingest run is most likely to catch, in rough order:
    ```sh
    docker compose build          # first build compiles Swift: expect ~10-20 min
    docker compose up -d server
-   curl http://<NAS-LAN-IP>:8080/v1/manifest   # empty manifest until ingest runs
+   curl http://<HOST-LAN-IP>:8080/v1/manifest   # empty manifest until ingest runs
    ```
 
 4. First ingest (interactive, so you can watch it):
@@ -185,14 +247,14 @@ What a wider ingest run is most likely to catch, in rough order:
    `aero.sqlite` and roughly 64 000 airports across 247 countries.
 
    The database carries a schema version (currently **5**). The app gates
-   features on it and falls back gracefully on older ones, so a NAS still
+   features on it and falls back gracefully on older ones, so a host still
    serving an earlier cycle will not break a newer app — but `kind`-based
    map/search filtering and worldwide coverage need 5 or later.
    A failure mid-run is fine — rerun and it resumes, skipping every artifact
    that already made it into the tree.
 
 5. Point the app at the server: Settings → server URL →
-   `http://<NAS-LAN-IP>:8080` (or launch arg `-serverBaseURL`). The
+   `http://<HOST-LAN-IP>:8080` (or launch arg `-serverBaseURL`). The
    Downloads tab's regions should populate from the manifest.
 
 ### NOTAMs
@@ -209,7 +271,7 @@ app binary, so the token is fetched and refreshed here and the app reads
 3. Check it:
 
    ```sh
-   curl http://<NAS-LAN-IP>:8080/v1/airports/KAUS/notams
+   curl http://<HOST-LAN-IP>:8080/v1/airports/KAUS/notams
    ```
 
    `"configured": false` means the server did not see credentials — check the
@@ -221,12 +283,12 @@ environments instead of production.
 
 ### Building the image elsewhere
 
-The NAS CPU may be slow for the Swift compile. Alternatives:
+A slow host CPU makes the Swift compile painful. Alternatives:
 
 - Cross-build on a dev machine:
   `docker buildx build --platform linux/amd64 -f Server/Dockerfile -t flightbag-server .`
   then `docker save flightbag-server | ssh nas docker load`.
-- Match the platform to the NAS (`linux/amd64` for Intel/AMD boxes,
+- Match the platform to the host (`linux/amd64` for Intel/AMD boxes,
   `linux/arm64` for ARM ones).
 
 ## Scheduling ingest
@@ -237,18 +299,21 @@ date, and `ingest-all` HEAD-probes for it, so a daily cadence catches the
 publication within a day):
 
 ```cron
-14 3 * * *  /path/on/nas/FlightBag/Server/scripts/ingest-cron.sh
+PATH=/usr/local/bin:/usr/bin:/bin
+14 3 * * *  /path/to/FlightBag/Server/scripts/ingest-cron.sh
 ```
 
-On Synology/QNAP use the built-in Task Scheduler with the same command.
+Set `PATH` explicitly — cron's default is minimal and the script needs to find
+`docker`. On Synology/QNAP use the built-in Task Scheduler with the same command.
 Logs land in `Server/logs/ingest-YYYY-MM-DD.log`. Set
 `FLIGHTBAG_FAIL_WEBHOOK` in `.env` (e.g. an https://ntfy.sh topic URL) to get
 a push on failure.
 
 What a scheduled run does, in order: pick target cycle (next if published,
 else current; instant no-op via the cycle's `.complete` marker when done
-already) → NASR + d-TPP + CIFP database → sectionals / IFR panels (IFR editions are
-56-day and publish under the cycle they belong to, with `.expires` sidecars)
+already) → NASR + d-TPP + CIFP database → sectionals / IFR panels (both are
+56-day editions and publish under the cycle they belong to, with `.expires`
+sidecars)
 → basemap per `FLIGHTBAG_BASEMAP` policy → per-state plate bundles → rebuild
 `manifest.json`. When the calendar rolls into a cycle that was pre-built, the
 run also refreshes the manifest so next-cycle products graduate to current.
@@ -267,10 +332,29 @@ prints "already complete and manifest current — nothing to do". Same applies
 to rebuilding one artifact: delete its file *and* its `.sha256` sidecar *and*
 the `.complete` marker, then rerun.
 
+Artifacts are owned by the container's uid 999, so the host user usually
+**cannot** delete them directly — go through a container:
+
 ```sh
-rm Public/artifacts/<cycle>/.complete
+docker compose --profile ingest run --rm --entrypoint sh ingest \
+  -c "rm -f /app/Public/artifacts/<cycle>/.complete"
 docker compose --profile ingest run --rm ingest
 ```
+
+**The database is skipped independently of `.complete`.** A run logs
+`db/aero.sqlite exists — skipping NASR/d-TPP` whenever the published database is
+present, so any fix to database *content* — a d-TPP parsing change, say — has no
+effect until the artifact itself is removed:
+
+```sh
+docker compose --profile ingest run --rm --entrypoint sh ingest -c "rm -f \
+  /app/Public/artifacts/<cycle>/db/aero.sqlite \
+  /app/Public/artifacts/<cycle>/db/aero.sqlite.sha256 \
+  /app/Public/artifacts/<cycle>/.complete"
+```
+
+Deleting `.complete` alone is the classic mistake here: the run restarts, skips
+the database, and cheerfully reports success having changed nothing.
 
 Scope can also be overridden per-run without touching `.env` — shell
 variables win over the `.env` file:
@@ -302,7 +386,18 @@ rebake manifest URLs. No image changes needed.
 - **`gdalwarp ... No such file or directory`** — you're running `ingest-all`
   outside the container (the image is what provides GDAL), or the image
   build's apt step failed.
-- **Enroute panel "No ... edition found"** — IFR editions publish every
-  other cycle; requesting one during an off cycle walks back automatically,
-  so this usually means an FAA URL change. Check
-  `aeronav.faa.gov/enroute/<MM-DD-YYYY>/`.
+- **"No edition found"** — chart editions publish every other cycle;
+  requesting one during an off cycle walks back automatically, so this usually
+  means an FAA URL change. Check `aeronav.faa.gov/enroute/<MM-DD-YYYY>/` or
+  `aeronav.faa.gov/visual/<MM-DD-YYYY>/sectional-files/`.
+- **Run reports "N artifact(s) failed" and exits nonzero** — expected shape for
+  a partial run, not a crash. Everything else published and the manifest is
+  current; `.complete` was deliberately withheld. Just run it again, or let the
+  next cron fire: it retries only the missing artifacts.
+- **A change to the database seems to do nothing** — the run logs
+  `db/aero.sqlite exists — skipping NASR/d-TPP`. Delete the database, its
+  `.sha256` and `.complete`; see "Widening scope".
+- **`rm: Permission denied` clearing artifacts** — they are owned by the
+  container's uid 999. Delete through a container, see "Platform notes".
+- **Ingest ran but nothing changed** — "already complete and manifest current".
+  The `.complete` marker short-circuits the run; delete it first.
