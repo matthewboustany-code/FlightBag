@@ -90,13 +90,16 @@ final class DownloadCenter {
     // MARK: Manifest
 
     func refreshManifest() async {
-        if let fetched = await manifestClient.fetch() {
+        let (fetched, failure) = await manifestClient.fetch()
+        if let fetched {
             manifest = fetched
-            manifestError = nil
+            // A cached manifest still counts as usable, but say so when the
+            // refresh behind it failed rather than showing stale data silently.
+            manifestError = failure
         } else if manifest == nil {
             manifestError = ServerConfig.baseURL == nil
                 ? "No download server configured (Settings → Server)."
-                : "Download server unreachable and nothing cached."
+                : failure ?? "Download server unreachable and nothing cached."
         }
     }
 

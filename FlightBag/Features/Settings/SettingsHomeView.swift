@@ -20,7 +20,7 @@ struct SettingsHomeView: View {
                 unitsSection
                 adsbSection
                 Section {
-                    TextField("https://data.example.com", text: $serverBaseURL)
+                    TextField("http://192.168.1.50:8080", text: $serverBaseURL)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
@@ -28,7 +28,11 @@ struct SettingsHomeView: View {
                 } header: {
                     Text("Download Server")
                 } footer: {
-                    Text("Where chart-region downloads come from. Leave empty until a FlightBag data server is available.")
+                    // The old placeholder showed https://, which sends people
+                    // straight into a TLS handshake against a server that only
+                    // speaks plain HTTP — the failure looks like the server is
+                    // down rather than like a typo.
+                    Text("Where chart-region downloads come from. Include the scheme: a server on your own network is usually http://, not https://. Leave empty until a FlightBag data server is available.")
                 }
                 Section {
                     SecureField("openAIP API key", text: $openAIPKey)
