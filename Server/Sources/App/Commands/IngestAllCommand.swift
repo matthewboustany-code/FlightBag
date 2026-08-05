@@ -111,7 +111,13 @@ struct IngestAllCommand: AsyncCommand {
         private static func regionIds(_ selection: Selection) throws -> [String] {
             switch selection {
             case .none: return []
-            case .all: return ChartCatalog.regionIds
+            case .all:
+                // Terminal procedures are an FAA d-TPP product, so only US
+                // states have them. ChartCatalog.regionIds also carries the
+                // open flightmaps FIRs (OFM-LOVV and friends), and handing one
+                // of those to PlateBundler is a hard error — "all" used to kill
+                // the run as soon as it walked past the last US state.
+                return ChartCatalog.regionIds.filter { $0.hasPrefix("US-") && $0.count == 5 }
             case .list(let raw):
                 return try raw.map {
                     let id = $0.uppercased().hasPrefix("US-") ? $0.uppercased() : "US-\($0.uppercased())"
@@ -193,19 +199,21 @@ struct IngestAllCommand: AsyncCommand {
         try await OpenFlightMapsIngestor(workDirectory: workDir) { console.info($0) }
             .run(cycle: cycle, firs: scope.openFlightMapsFIRs, into: cycleDir)
         try await buildBasemap(policy: scope.basemap, cycle: cycle, artifactsRoot: artifactsRoot, workDir: workDir, pipeline: pipeline, console: console)
-        try await buildPlates(regions: scope.plateRegions, cycle: cycle, cycleDir: cycleDir, workDir: workDir, console: console)
+        let plateFailures = try await buildPlates(regions: scope.plateRegions, cycle: cycle, cycleDir: cycleDir, workDir: workDir, console: console)
         try writeManifest(artifactsRoot: artifactsRoot, baseURL: baseURL, currentCycle: manifestCycle, console: console)
 
-        // Charts that failed are published-as-absent: the manifest above lists
-        // only what exists, so the app offers the rest and stays usable. Do not
+        // Whatever failed is published-as-absent: the manifest above lists only
+        // what exists, so the app offers the rest and stays usable. Do not
         // write .complete — that marker is what makes the next run a no-op, and
         // withholding it is exactly what makes tomorrow's cron retry the gaps.
-        guard chartFailures.isEmpty else {
-            for failure in chartFailures {
+        let failures = chartFailures + plateFailures
+        guard failures.isEmpty else {
+            for failure in failures {
                 console.warning("  \(failure)")
             }
             throw IngestError("""
-                \(chartFailures.count) of the charts in scope failed for cycle \(cycle.id). \
+                \(failures.count) artifact(s) failed for cycle \(cycle.id) \
+                (\(chartFailures.count) chart(s), \(plateFailures.count) plate bundle(s)). \
                 Everything else is published and the manifest is current; the cycle is \
                 deliberately left incomplete so the next run retries only these.
                 """)
@@ -386,12 +394,18 @@ struct IngestAllCommand: AsyncCommand {
         }
     }
 
-    private func buildPlates(regions: [String], cycle: DataCycle, cycleDir: URL, workDir: URL, console: Console) async throws {
-        guard !regions.isEmpty else { return }
+    /// Bundles every region in scope and returns the ones that failed. Same
+    /// reasoning as `buildTiles`: one region's bundle is its own artifact, the
+    /// manifest lists what exists, so a bad region should cost that region
+    /// rather than the fifty that come after it.
+    @discardableResult
+    private func buildPlates(regions: [String], cycle: DataCycle, cycleDir: URL, workDir: URL, console: Console) async throws -> [String] {
+        guard !regions.isEmpty else { return [] }
         let db = cycleDir.appendingPathComponent("db/aero.sqlite")
         guard FileManager.default.fileExists(atPath: db.path) else {
             throw IngestError("Plate bundling needs \(db.path); the database stage should have produced it")
         }
+        var failures: [String] = []
         for region in regions {
             let name = "plates_\(region)_\(cycle.id).zip"
             let final = cycleDir.appendingPathComponent("plates/\(name)")
@@ -399,12 +413,18 @@ struct IngestAllCommand: AsyncCommand {
                 console.info("plates/\(name) exists — skipping")
                 continue
             }
-            let temp = workDir.appendingPathComponent(name)
-            let bundler = PlateBundler(workDirectory: workDir) { console.info($0) }
-            let count = try await bundler.run(regionId: region, databasePath: db.path, output: temp.path)
-            try publish(temp, to: final)
-            console.success("plates/\(name) published (\(count) plates)")
+            do {
+                let temp = workDir.appendingPathComponent(name)
+                let bundler = PlateBundler(workDirectory: workDir) { console.info($0) }
+                let count = try await bundler.run(regionId: region, databasePath: db.path, output: temp.path)
+                try publish(temp, to: final)
+                console.success("plates/\(name) published (\(count) plates)")
+            } catch {
+                console.warning("plates/\(name) FAILED: \(error)")
+                failures.append("\(name): \(error)")
+            }
         }
+        return failures
     }
 
     private func writeManifest(artifactsRoot: URL, baseURL: URL, currentCycle: DataCycle, console: Console) throws {

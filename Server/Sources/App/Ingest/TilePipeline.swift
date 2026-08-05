@@ -69,14 +69,11 @@ struct TilePipeline {
             }
         }
 
-        /// FAA charts ship as 256-color palettes needing `-expand rgba`;
-        /// Natural Earth is already RGB (the expand step would fail on it).
-        var needsPaletteExpansion: Bool {
-            switch self {
-            case .sectional, .enrouteLow, .enrouteHigh: return true
-            case .naturalEarthBasemap: return false
-            }
-        }
+        // Whether a source needs `-expand rgba` is NOT a property of the
+        // product: VFR sectionals ship as 256-color palettes, but IFR enroute
+        // panels ship as straight RGB and `-expand rgba` fails on them with
+        // "band 1 has no color table". Ask the file instead — see
+        // `sourceHasColorTable`.
 
         func remoteURL(for cycle: DataCycle) -> URL {
             let date = Self.dateComponent(for: cycle)
@@ -116,6 +113,16 @@ struct TilePipeline {
             }
         }
         throw IngestError("No edition found for \(source.cacheStem) at \(Source.dateComponent(for: requested)) or the prior cycle")
+    }
+
+    /// Does band 1 carry a palette? `-expand rgba` is only valid when it does,
+    /// and errors out otherwise. Asking the raster beats hardcoding it per
+    /// product: sectionals are paletted, enroute panels are already RGB, and
+    /// the FAA is free to change either without telling us.
+    private func sourceHasColorTable(_ tifPath: String) throws -> Bool {
+        let executable = gdalBinDirectory.map { "\($0)/gdalinfo" } ?? "gdalinfo"
+        let info = try capturingIngestProcess(executable, [tifPath], searchPath: gdalBinDirectory == nil)
+        return info.contains("Color Table") || info.contains("ColorInterp=Palette")
     }
 
     private static let maxAttempts = 3
@@ -203,11 +210,12 @@ struct TilePipeline {
         let rgba = extractDir.appendingPathComponent("rgba.tif").path
         let mercator = extractDir.appendingPathComponent("mercator.tif").path
         let warpInput: String
-        if source.needsPaletteExpansion {
+        if try sourceHasColorTable(tifPath) {
             logger("Expanding palette to RGBA…")
             try gdal("gdal_translate", ["-q", "-expand", "rgba", tifPath, rgba])
             warpInput = rgba
         } else {
+            logger("Already RGB — skipping palette expansion")
             warpInput = tifPath
         }
         logger("Reprojecting to EPSG:3857…")
@@ -335,6 +343,16 @@ func runIngestProcess(_ executable: String, _ arguments: [String], searchPath: B
     process.waitUntilExit()
     guard process.terminationStatus == 0 else {
         let message = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        throw IngestError("\(executable) failed (\(process.terminationStatus)): \(message.prefix(300))")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Report the ERROR lines when GDAL gives us any. Truncating from the
+        // front used to bury the real cause behind a 290-character EPSG:4269
+        // warning that GDAL emits on every FAA chart — 48 enroute panels failed
+        // with nothing in the log but that warning.
+        let errorLines = message
+            .split(separator: "\n")
+            .filter { $0.contains("ERROR") || $0.lowercased().hasPrefix("error") }
+            .joined(separator: "; ")
+        let detail = errorLines.isEmpty ? String(message.suffix(400)) : errorLines
+        throw IngestError("\(executable) failed (\(process.terminationStatus)): \(detail)")
     }
 }
