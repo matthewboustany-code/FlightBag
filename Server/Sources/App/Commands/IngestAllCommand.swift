@@ -213,9 +213,15 @@ struct IngestAllCommand: AsyncCommand {
         }
         let current = DataCycle.current()
         let next = current.next()
-        // Any sectional works as the publication probe; San Antonio is small
-        // and has existed forever. A failed probe just means "not yet".
-        let probe = TilePipeline.Source.sectional(chart: "San_Antonio").remoteURL(for: next)
+        // Probe the d-TPP metafile, NOT a sectional. VFR sectionals are 56-day
+        // products, so they only publish on every other 28-day cycle: probing
+        // one makes odd cycles look unpublished forever, and a daily cron would
+        // sit on an expiring cycle rather than rolling over. The d-TPP metafile
+        // is 28-day, publishes with the cycle, and aeronav answers HEAD for it
+        // (nfdc, which serves NASR, returns 503 to HEAD — so NASR cannot be the
+        // probe even though it is also 28-day).
+        // A failed probe just means "not yet".
+        let probe = URL(string: "https://aeronav.faa.gov/d-tpp/\(next.id)/xml_data/d-tpp_Metafile.xml")!
         if (try? await pipeline.remoteExists(probe)) == true {
             console.info("FAA has published cycle \(next.id) — targeting it")
             return next
@@ -292,9 +298,9 @@ struct IngestAllCommand: AsyncCommand {
         }
 
         for source in sources {
-            // Enroute editions may belong to the prior cycle (56-day cadence);
+            // Dated editions may belong to the prior cycle (56-day cadence);
             // check both candidate homes before paying for a network probe.
-            let candidates = source.isEnroute ? [cycle, cycle.previous()] : [cycle]
+            let candidates = source.isFiftySixDayEdition ? [cycle, cycle.previous()] : [cycle]
             if let existing = candidates.first(where: { candidate in
                 FileManager.default.fileExists(
                     atPath: artifactsRoot.appendingPathComponent("\(candidate.id)/tiles/\(source.artifactFileName)").path
@@ -308,7 +314,7 @@ struct IngestAllCommand: AsyncCommand {
             try await pipeline.run(source: source, cycle: editionCycle, output: temp.path)
             let final = artifactsRoot.appendingPathComponent("\(editionCycle.id)/tiles/\(source.artifactFileName)")
             try publish(temp, to: final)
-            if source.isEnroute {
+            if source.isFiftySixDayEdition {
                 try publish(
                     URL(fileURLWithPath: temp.path + ".expires"),
                     to: URL(fileURLWithPath: final.path + ".expires")

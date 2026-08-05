@@ -53,12 +53,19 @@ struct TilePipeline {
             }
         }
 
-        /// Enroute editions publish every other AIRAC cycle (56 days) and
-        /// need `.expires` sidecars; sectionals track the requested cycle.
-        var isEnroute: Bool {
+        /// FAA chart editions run on a 56-day cadence — VFR sectionals just as
+        /// much as IFR enroute panels. On roughly half of the 28-day AIRAC
+        /// cycles there is no new edition and the current one carries over, so
+        /// anything dated must be able to fall back to the prior cycle and must
+        /// advertise an expiry beyond its own cycle. Treating sectionals as
+        /// 28-day makes them 404 on every off cycle (2608 is one: there is a
+        /// 07-09-2026 edition and a 09-03-2026 one, but no 08-06-2026).
+        ///
+        /// The basemap is Natural Earth, not an FAA product, and has no edition.
+        var isFiftySixDayEdition: Bool {
             switch self {
-            case .enrouteLow, .enrouteHigh: return true
-            case .sectional, .naturalEarthBasemap: return false
+            case .sectional, .enrouteLow, .enrouteHigh: return true
+            case .naturalEarthBasemap: return false
             }
         }
 
@@ -99,16 +106,16 @@ struct TilePipeline {
     let logger: (String) -> Void
 
     /// The cycle whose chart directory actually contains this source.
-    /// Enroute editions only exist every other cycle, so a request during an
+    /// Dated editions only exist every other cycle, so a request during an
     /// off cycle walks back one cycle. Throws if neither exists.
     func resolveEditionCycle(for source: Source, requested: DataCycle) async throws -> DataCycle {
-        guard source.isEnroute else { return requested }
+        guard source.isFiftySixDayEdition else { return requested }
         for candidate in [requested, requested.previous()] {
             if try await remoteExists(source.remoteURL(for: candidate)) {
                 return candidate
             }
         }
-        throw IngestError("No enroute edition found for \(source.cacheStem) at \(Source.dateComponent(for: requested)) or the prior cycle")
+        throw IngestError("No edition found for \(source.cacheStem) at \(Source.dateComponent(for: requested)) or the prior cycle")
     }
 
     func run(source: Source, cycle: DataCycle, output: String) async throws {
@@ -165,9 +172,11 @@ struct TilePipeline {
         try? FileManager.default.removeItem(atPath: rgba)
         try? FileManager.default.removeItem(atPath: mercator)
 
-        // 56-day enroute editions outlive their cycle; the sidecar tells the
-        // manifest builder how long to carry the artifact forward.
-        if source.isEnroute {
+        // 56-day editions outlive their cycle; the sidecar tells the manifest
+        // builder how long to carry the artifact forward. Sectionals need this
+        // as much as enroute panels — without it a sectional whose edition sits
+        // under the prior cycle drops out of the next cycle's manifest.
+        if source.isFiftySixDayEdition {
             let expires = cycle.next().next().effectiveDate
             let sidecar = output + ".expires"
             try ISO8601DateFormatter().string(from: expires).write(toFile: sidecar, atomically: true, encoding: .utf8)
