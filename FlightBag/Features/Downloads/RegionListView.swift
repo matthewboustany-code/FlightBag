@@ -3,9 +3,16 @@ import FBModels
 
 /// Pick a region to download — rendered entirely from the manifest, so new
 /// coverage (states today, countries later) needs no app change.
+///
+/// Tapping a region opens its detail view for per-kind control. "Select" turns
+/// the list into a multi-select: with 70+ regions published, going into each
+/// one to tick the same boxes is the slow path.
 struct RegionListView: View {
     @Environment(AppEnvironment.self) private var environment
     @State private var searchText = ""
+    @State private var isSelecting = false
+    @State private var selectedRegions: Set<String> = []
+    @State private var choosingKinds = false
 
     var body: some View {
         let center = environment.downloadCenter
@@ -18,11 +25,34 @@ struct RegionListView: View {
                 )
             }
             ForEach(filteredRegions) { region in
-                NavigationLink(value: region.id) {
-                    HStack {
-                        Text(region.name)
-                        Spacer()
-                        statusLabel(for: region.id)
+                if isSelecting {
+                    Button {
+                        toggle(region.id)
+                    } label: {
+                        HStack {
+                            Image(systemName: selectedRegions.contains(region.id) ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(selectedRegions.contains(region.id) ? Color.accentColor : .secondary)
+                            Text(region.name)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                            statusLabel(for: region.id)
+                        }
+                        // The Spacer is empty space, and a plain button's hit
+                        // area is only its content — without this, tapping the
+                        // middle of a row does nothing at all.
+                        .contentShape(Rectangle())
+                    }
+                    // Without .plain the whole row renders as accent-coloured
+                    // link text, which reads as "already selected".
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("region.select.\(region.id)")
+                } else {
+                    NavigationLink(value: region.id) {
+                        HStack {
+                            Text(region.name)
+                            Spacer()
+                            statusLabel(for: region.id)
+                        }
                     }
                 }
             }
@@ -31,9 +61,79 @@ struct RegionListView: View {
         .navigationDestination(for: String.self) { regionId in
             RegionDetailView(regionId: regionId)
         }
-        .searchable(text: $searchText, prompt: "Search states")
+        .searchable(text: $searchText, prompt: "Search regions")
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                if center.regions.isEmpty {
+                    EmptyView()
+                } else if isSelecting {
+                    Button("Cancel") {
+                        isSelecting = false
+                        selectedRegions.removeAll()
+                    }
+                } else {
+                    Button("Select") { isSelecting = true }
+                        .accessibilityIdentifier("regions.select")
+                }
+            }
+        }
+        // Not toolbar(.bottomBar): this screen lives inside the app's TabView,
+        // and a bottom-bar item renders underneath the tab bar where it cannot
+        // be tapped. A safe-area inset sits above it correctly.
+        .safeAreaInset(edge: .bottom) {
+            if isSelecting {
+                selectionBar
+                    .padding(.horizontal)
+                    .padding(.vertical, 12)
+                    .background(.bar)
+            }
+        }
+        .sheet(isPresented: $choosingKinds) {
+            BulkDownloadSheet(regionIds: selectedRegions) {
+                isSelecting = false
+                selectedRegions.removeAll()
+            }
+        }
         .task {
             await environment.downloadCenter.refreshManifest()
+        }
+    }
+
+    private var selectionBar: some View {
+        HStack {
+            // Scoped to what is on screen, so it composes with search rather
+            // than silently selecting 70 regions the user cannot see.
+            Button(allFilteredSelected ? "Deselect All" : "Select All") {
+                if allFilteredSelected {
+                    selectedRegions.subtract(filteredRegions.map(\.id))
+                } else {
+                    selectedRegions.formUnion(filteredRegions.map(\.id))
+                }
+            }
+            Spacer()
+            Button {
+                choosingKinds = true
+            } label: {
+                Text(selectedRegions.isEmpty
+                     ? "Download"
+                     : "Download \(selectedRegions.count) Region\(selectedRegions.count == 1 ? "" : "s")")
+                    .fontWeight(.semibold)
+            }
+            .disabled(selectedRegions.isEmpty)
+            .accessibilityIdentifier("regions.downloadSelected")
+        }
+    }
+
+    private var allFilteredSelected: Bool {
+        let ids = filteredRegions.map(\.id)
+        return !ids.isEmpty && ids.allSatisfy { selectedRegions.contains($0) }
+    }
+
+    private func toggle(_ regionId: String) {
+        if selectedRegions.contains(regionId) {
+            selectedRegions.remove(regionId)
+        } else {
+            selectedRegions.insert(regionId)
         }
     }
 
@@ -57,6 +157,111 @@ struct RegionListView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
+    }
+}
+
+/// Chart types to apply across every selected region, chosen once.
+private struct BulkDownloadSheet: View {
+    @Environment(AppEnvironment.self) private var environment
+    @Environment(\.dismiss) private var dismiss
+    let regionIds: Set<String>
+    let onStart: () -> Void
+
+    @State private var selectedKinds: Set<DownloadProduct.ContentKind> = [.plates]
+
+    private static let offeredKinds: [(DownloadProduct.ContentKind, String)] = [
+        (.vfrSectional, "VFR Sectionals"),
+        (.ifrEnrouteLow, "IFR Enroute Low"),
+        (.ifrEnrouteHigh, "IFR Enroute High"),
+        (.plates, "Terminal Procedures"),
+        (.basemap, "Offline Basemap"),
+    ]
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    ForEach(Self.offeredKinds, id: \.0) { kind, title in
+                        let size = totalSize(for: [kind])
+                        Toggle(isOn: binding(for: kind)) {
+                            HStack {
+                                Text(title)
+                                Spacer()
+                                Text(size == 0
+                                     ? "Not published"
+                                     : ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .disabled(size == 0)
+                    }
+                } header: {
+                    Text("Chart Types")
+                } footer: {
+                    Text("Applied to all \(regionIds.count) selected region\(regionIds.count == 1 ? "" : "s"). Sizes count each chart once even when several regions share it.")
+                        .font(.caption)
+                }
+
+                Section {
+                    let total = totalSize(for: selectedKinds)
+                    Button {
+                        for regionId in regionIds {
+                            environment.downloadCenter.startDownload(regionId: regionId, kinds: selectedKinds)
+                        }
+                        onStart()
+                        dismiss()
+                    } label: {
+                        Label(
+                            total == 0
+                                ? "Choose a Chart Type"
+                                : "Download \(ByteCountFormatter.string(fromByteCount: total, countStyle: .file))",
+                            systemImage: "arrow.down.circle.fill"
+                        )
+                    }
+                    .disabled(total == 0)
+                    .accessibilityIdentifier("regions.bulkDownload.confirm")
+                }
+            }
+            .navigationTitle("\(regionIds.count) Region\(regionIds.count == 1 ? "" : "s")")
+            .navigationBarTitleDisplayMode(.inline)
+            .task {
+                // Plates are the usual default, but a server that has not
+                // published them for these regions would otherwise show a lit
+                // toggle sitting next to the words "Not published".
+                selectedKinds = selectedKinds.filter { totalSize(for: [$0]) > 0 }
+            }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+            }
+        }
+    }
+
+    /// Charts are shared between regions (one sectional covers several states),
+    /// so sum distinct products — adding per-region totals would overstate the
+    /// download badly across a wide selection.
+    private func totalSize(for kinds: Set<DownloadProduct.ContentKind>) -> Int64 {
+        guard !kinds.isEmpty else { return 0 }
+        var seen: Set<String> = []
+        var total: Int64 = 0
+        for regionId in regionIds {
+            for product in environment.downloadCenter.products(regionId: regionId, kinds: kinds)
+            where seen.insert(product.id).inserted {
+                total += product.sizeBytes
+            }
+        }
+        return total
+    }
+
+    private func binding(for kind: DownloadProduct.ContentKind) -> Binding<Bool> {
+        Binding(
+            get: { selectedKinds.contains(kind) },
+            set: { on in
+                if on { selectedKinds.insert(kind) } else { selectedKinds.remove(kind) }
+            }
+        )
     }
 }
 
