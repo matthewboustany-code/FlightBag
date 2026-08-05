@@ -76,12 +76,25 @@ final class DTPPMetafileParser: NSObject, XMLParserDelegate {
     private var chartName = ""
     private var pdfName = ""
     private var parseError: Error?
+    private var closedRootElement = false
 
     func parse(data: Data) throws -> [DTPPChartRecord] {
         let parser = XMLParser(data: data)
         parser.delegate = self
-        guard parser.parse() else {
-            throw parseError ?? parser.parserError ?? IngestError("d-TPP metafile parse failed")
+        if !parser.parse() {
+            // On Linux, XMLParser is swift-corelibs-foundation's libxml2 wrapper,
+            // which enforces XML_MAX_TEXT_LENGTH (10 MB) because it never sets
+            // XML_PARSE_HUGE. The d-TPP metafile is ~16 MB, so parse() reports
+            // NSXMLParserInternalError at EOF even though libxml2 delivered every
+            // element first — the record count matches the file exactly. Darwin's
+            // NSXMLParser has no such limit and returns true here.
+            //
+            // Trust the document, not the return value: a genuinely truncated or
+            // malformed file never closes the root element, so that is the signal
+            // worth gating on.
+            guard closedRootElement else {
+                throw parseError ?? parser.parserError ?? IngestError("d-TPP metafile parse failed")
+            }
         }
         return records
     }
@@ -127,6 +140,8 @@ final class DTPPMetafileParser: NSObject, XMLParserDelegate {
             }
         } else if elementName == "airport_name" {
             currentAirportId = nil
+        } else if elementName == "digital_tpp" {
+            closedRootElement = true
         }
     }
 

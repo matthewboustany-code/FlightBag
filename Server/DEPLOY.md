@@ -26,9 +26,40 @@ with a matching `.sha256`, and the server serves it with range requests
 than adding a fifth band, so the MBTILES driver is happy and `-dstalpha`
 should stay.
 
-Still unproven: d-TPP plate bundling, the basemap build, IFR enroute panels,
-and NASR/d-TPP/CIFP ingestion on Linux — that run reused the existing
-`aero.sqlite` and was scoped to charts only.
+**NASR/d-TPP/CIFP ingestion is now proven on Linux too.** On 2026-08-05 a
+database-only run on the Debian/Proxmox Docker VM (`debian4docker`, amd64) built
+a schema-5 `aero.sqlite` from scratch: 64 007 airports, 9 129 navaids, 24 090
+plates, 4 010 CIFP procedures / 73 314 legs, published with a matching `.sha256`
+and served with range requests (`206`).
+
+That run surfaced one genuine Linux-only defect, now fixed in
+`DTPPIngestor.swift` — see "The d-TPP 10 MB parser limit" below.
+
+Still unproven: d-TPP plate *bundling* (the per-state PDF bundles; the metafile
+parse itself is proven), the basemap build, and IFR enroute panels.
+
+### The d-TPP 10 MB parser limit
+
+On Linux, `XMLParser` is swift-corelibs-foundation's libxml2 wrapper, and it
+never sets `XML_PARSE_HUGE`. libxml2 therefore enforces `XML_MAX_TEXT_LENGTH`
+(10 000 000 bytes) and fails any larger document. The d-TPP metafile is ~16 MB,
+so `parse()` returned false with `NSXMLParserInternalError` — reported at EOF,
+*after* every element had already been delivered correctly. Darwin's
+`NSXMLParser` has no such limit, which is why this never showed up on macOS.
+
+The symptom is badly misleading: a Swift `Fatal error` + backtrace with
+`Error Domain=NSXMLParserErrorDomain Code=1 "(null)"`, which reads like a
+corrupt download. The metafile was fine — Python parsed it without complaint.
+Threshold confirmed empirically with synthetic documents: 9 MB parses, 10 MB
+does not, regardless of BOM, CRLF, or element count.
+
+`DTPPMetafileParser.parse` now gates on whether the root element actually
+closed rather than on `parse()`'s return value. A truncated or malformed file
+never closes its root, so that stays a real failure. Plate count matches the
+metafile's record count exactly (24 090), confirming nothing is dropped.
+
+**If another ingestor ever parses XML over 10 MB on Linux, it will hit this
+same wall** — apply the same pattern rather than assuming a bad download.
 
 Note also that the Swift build does long `git` fetches during
 `swift package resolve` (vapor alone took ~8 min on a slow link); if the Docker
