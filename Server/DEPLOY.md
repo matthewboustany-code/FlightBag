@@ -35,8 +35,40 @@ and served with range requests (`206`).
 That run surfaced one genuine Linux-only defect, now fixed in
 `DTPPIngestor.swift` — see "The d-TPP 10 MB parser limit" below.
 
-Still unproven: d-TPP plate *bundling* (the per-state PDF bundles; the metafile
-parse itself is proven), the basemap build, and IFR enroute panels.
+**Plate bundling and the basemap build are now proven too.** A full-scope run on
+the same VM published five products totalling 1.3 GB for cycle 2607: the
+database, both San_Antonio and Houston sectionals, the Natural Earth basemap,
+and a 567 MB US-TX plate bundle of 2 934 plates.
+
+Still unproven: IFR enroute panels.
+
+### Withdrawn charts (DELETED_JOB)
+
+Each cycle the FAA marks withdrawn charts with `useraction` `D` and the literal
+sentinel `pdf_name` `DELETED_JOB.PDF` — 43 of them in 2607. That name ends in
+`.PDF`, so the old suffix check let them through into the `plate` table, where
+two things went wrong: bundling eventually requested one and got a 404, and the
+app would have listed 43 charts that do not exist. They are now dropped at parse
+time. Expect the plate count to be slightly *lower* than the metafile's record
+count for this reason (24 047 vs 24 090 in 2607).
+
+### Plate bundling is fail-loud, not fail-fast
+
+A missing plate must never be shipped silently, so `PlateBundler`:
+
+- **Validates cached files**, not just their existence. A truncated PDF left by
+  an interrupted run (OOM kill, host suspend) is re-fetched rather than bundled.
+- **Checks the payload is a PDF.** aeronav can answer 200 with an HTML error
+  page; without this it would be zipped in as though it were a chart.
+- **Writes to a temp path and renames**, so an interrupted write cannot leave a
+  half-file that the next run mistakes for a cached one.
+- **Retries only what retrying fixes** — timeouts, resets, 5xx, 429. A 404 is
+  the FAA stating the URL is wrong; it fails immediately.
+- **Collects failures and reports them together** at the end of the region
+  rather than aborting on the first, so one run tells you about every bad plate
+  instead of making you re-run once per failure.
+- **Asserts completeness**: `fetched + cached` must equal the row count the
+  database claims for the region, or the bundle is not written.
 
 ### The d-TPP 10 MB parser limit
 

@@ -134,8 +134,15 @@ final class DTPPMetafileParser: NSObject, XMLParserDelegate {
             let code = chartCode.trimmingCharacters(in: .whitespacesAndNewlines)
             let name = chartName.trimmingCharacters(in: .whitespacesAndNewlines)
             let pdf = pdfName.trimmingCharacters(in: .whitespacesAndNewlines)
-            // DELETED_JOB entries have no PDF; skip anything unrenderable.
-            if let airportId = currentAirportId, !pdf.isEmpty, !name.isEmpty, pdf.uppercased().hasSuffix(".PDF") {
+            // Charts withdrawn this cycle carry useraction "D" and the literal
+            // sentinel pdf_name DELETED_JOB.PDF (43 of them in 2607). That name
+            // ends in ".PDF", so a suffix check alone lets them through — they
+            // then 404 on aeronav and take the whole plate bundle down with
+            // them. They are also not real charts, so they have no business in
+            // the plate table where the app would list them.
+            let upperPDF = pdf.uppercased()
+            if let airportId = currentAirportId, !pdf.isEmpty, !name.isEmpty,
+               upperPDF.hasSuffix(".PDF"), upperPDF != "DELETED_JOB.PDF" {
                 records.append(DTPPChartRecord(airportId: airportId, chartCode: code, chartName: name, pdfName: pdf))
             }
         } else if elementName == "airport_name" {
