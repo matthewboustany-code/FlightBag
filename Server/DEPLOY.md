@@ -19,10 +19,17 @@ v5.4.0 — from an empty artifact tree, on 2026-08-05:
 | VFR sectionals | 53 / 53, no failures |
 | IFR enroute panels | 48 / 48 (36 low + 12 high), no failures |
 | Basemap | Natural Earth, 251 MB |
-| Plate bundles | 51 state regions in scope |
+| Plate bundles | 51 / 51 state regions, no failures |
+| Manifest | 104 current + 52 next-cycle products, 19.4 GB |
 
 Cycle 2607 was built the same way at a narrower scope (2 sectionals, US-TX
 plates, basemap) and served end to end to the app.
+
+The manifest split is worth understanding, because it looks wrong at first
+glance. Charts resolve to their 56-day edition, which for 2608 is the one dated
+under **2607** — so they are *current* products. The 2608 database and plate
+bundles are 28-day and sit in `nextCycleProducts` until the calendar reaches the
+cycle, at which point a run graduates them without rebuilding anything.
 
 Everything is served over the LAN with matching `.sha256` and range requests
 (`206 Partial Content`), which the app's download resume depends on. GDAL 3.8.4,
