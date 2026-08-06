@@ -32,14 +32,17 @@ struct EFBMapView: UIViewRepresentable {
         map.pointOfInterestFilter = .excludingAll
         map.isPitchEnabled = false
         // `-mapDemoSpan 24` adjusts the initial view for screenshot
-        // automation (wide spans recenter on the whole US).
+        // automation (wide spans recenter on the whole US), and
+        // `-mapDemoCenter 44.5,-105.6` frames somewhere else entirely —
+        // chart work happens wherever the charts under test are.
         let demoSpan = UserDefaults.standard.double(forKey: "mapDemoSpan")
         let span = demoSpan > 0 ? demoSpan : 2.2
+        let center = Self.demoCenter() ?? CLLocationCoordinate2D(
+            latitude: demoSpan > 10 ? 38.5 : 30.19,
+            longitude: demoSpan > 10 ? -96 : -97.67
+        )
         map.setRegion(
-            MKCoordinateRegion(
-                center: CLLocationCoordinate2D(latitude: demoSpan > 10 ? 38.5 : 30.19, longitude: demoSpan > 10 ? -96 : -97.67),
-                span: MKCoordinateSpan(latitudeDelta: span, longitudeDelta: span)
-            ),
+            MKCoordinateRegion(center: center, span: MKCoordinateSpan(latitudeDelta: span, longitudeDelta: span)),
             animated: false
         )
         map.register(AirportAnnotationView.self, forAnnotationViewWithReuseIdentifier: AirportAnnotationView.reuseId)
@@ -82,6 +85,15 @@ struct EFBMapView: UIViewRepresentable {
             }
         }
         return map
+    }
+
+    /// `-mapDemoCenter "44.5,-105.6"` → a coordinate, or nil when absent or
+    /// unparseable (in which case the default framing stands).
+    private static func demoCenter() -> CLLocationCoordinate2D? {
+        guard let raw = UserDefaults.standard.string(forKey: "mapDemoCenter") else { return nil }
+        let parts = raw.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+        guard parts.count == 2 else { return nil }
+        return CLLocationCoordinate2D(latitude: parts[0], longitude: parts[1])
     }
 
     func updateUIView(_ map: MKMapView, context: Context) {
@@ -185,36 +197,45 @@ struct EFBMapView: UIViewRepresentable {
                 chartKey = nil
             }
 
-            // Aeronautical chart: offline MBTiles when downloaded, FAA
-            // streaming tiles otherwise.
+            // Aeronautical chart: downloaded MBTiles on top, streamed tiles
+            // underneath filling everything they don't cover. Having one
+            // sectional on the device used to mean the rest of the country
+            // went blank, which is not what downloading a state should do.
             let offlineSets = layers.offlineSetsForSelectedChart
-            let key = (layers.chart?.rawValue ?? "none") + "|" + offlineSets.map(\.id).joined(separator: ",")
+            // Coverage is part of the key, not just the file list: collar
+            // detection lands a second or two after a chart appears, and the
+            // overlays have to be rebuilt to pick the clipping up.
+            let key = ([layers.chart?.rawValue ?? "none"]
+                + offlineSets.map { "\($0.id)@\($0.coverage.hashValue)" }
+                + [layers.streamChartGaps ? "stream" : "offlineOnly",
+                   layers.chartSources.map(\.id).joined(separator: "+")])
+                .joined(separator: "|")
             if key != chartKey {
                 chartKey = key
                 for overlay in chartOverlays { map.removeOverlay(overlay) }
                 chartOverlays.removeAll()
 
                 if let chart = layers.chart {
-                    if offlineSets.isEmpty {
-                        // nil when no authority streams this kind — open
-                        // flightmaps publishes MBTiles and runs no tile
-                        // service, so its charts only appear once downloaded.
-                        if let streaming = StreamingChartOverlay(
-                            kind: chart,
-                            manifestSources: layers.chartSources
-                        ) {
-                            chartOverlays.append(streaming)
-                        }
-                    } else {
-                        for set in offlineSets {
-                            if let overlay = MBTilesOverlay(fileURL: set.url) {
-                                chartOverlays.append(overlay)
-                            }
+                    // nil when no authority streams this kind — open
+                    // flightmaps publishes MBTiles and runs no tile service,
+                    // so its charts only appear once downloaded.
+                    if offlineSets.isEmpty || layers.streamChartGaps,
+                       let streaming = StreamingChartOverlay(
+                           kind: chart,
+                           manifestSources: layers.chartSources,
+                           alreadyOffline: offlineSets.compactMap(\.coverage)
+                       ) {
+                        chartOverlays.append(streaming)
+                    }
+                    for set in offlineSets {
+                        if let overlay = MBTilesOverlay(fileURL: set.url, coverage: set.coverage) {
+                            chartOverlays.append(overlay)
                         }
                     }
-                    // Above every basemap overlay, below radar/advisories.
-                    for overlay in chartOverlays {
-                        map.insertOverlay(overlay, at: basemapOverlays.count, level: .aboveRoads)
+                    // Above every basemap overlay, below radar/advisories,
+                    // and in order: streaming first so downloads cover it.
+                    for (offset, overlay) in chartOverlays.enumerated() {
+                        map.insertOverlay(overlay, at: basemapOverlays.count + offset, level: .aboveRoads)
                     }
                 }
             }

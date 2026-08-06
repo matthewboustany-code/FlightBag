@@ -12,7 +12,9 @@ import FBModels
 ///   3. `gdalwarp -t_srs EPSG:3857`
 ///   4. `gdal_translate -of MBTILES -co TILE_FORMAT=PNG8` + `gdaladdo` overviews
 ///
-/// Chart collars are left visible in v0; cutline shapefiles strip them later.
+/// Chart collars are left in: the app finds each sheet's map area from the
+/// tiles themselves (`ChartCoverage`) and clips at render time, which also
+/// fixes charts already downloaded and MBTiles sideloaded from elsewhere.
 /// GDAL runs as an external process (Docker image in production, any local
 /// install during development via --gdal-bin).
 struct TilePipeline {
@@ -53,23 +55,27 @@ struct TilePipeline {
             }
         }
 
-        /// Enroute editions publish every other AIRAC cycle (56 days) and
-        /// need `.expires` sidecars; sectionals track the requested cycle.
-        var isEnroute: Bool {
-            switch self {
-            case .enrouteLow, .enrouteHigh: return true
-            case .sectional, .naturalEarthBasemap: return false
-            }
-        }
-
-        /// FAA charts ship as 256-color palettes needing `-expand rgba`;
-        /// Natural Earth is already RGB (the expand step would fail on it).
-        var needsPaletteExpansion: Bool {
+        /// FAA chart editions run on a 56-day cadence — VFR sectionals just as
+        /// much as IFR enroute panels. On roughly half of the 28-day AIRAC
+        /// cycles there is no new edition and the current one carries over, so
+        /// anything dated must be able to fall back to the prior cycle and must
+        /// advertise an expiry beyond its own cycle. Treating sectionals as
+        /// 28-day makes them 404 on every off cycle (2608 is one: there is a
+        /// 07-09-2026 edition and a 09-03-2026 one, but no 08-06-2026).
+        ///
+        /// The basemap is Natural Earth, not an FAA product, and has no edition.
+        var isFiftySixDayEdition: Bool {
             switch self {
             case .sectional, .enrouteLow, .enrouteHigh: return true
             case .naturalEarthBasemap: return false
             }
         }
+
+        // Whether a source needs `-expand rgba` is NOT a property of the
+        // product: VFR sectionals ship as 256-color palettes, but IFR enroute
+        // panels ship as straight RGB and `-expand rgba` fails on them with
+        // "band 1 has no color table". Ask the file instead — see
+        // `sourceHasColorTable`.
 
         func remoteURL(for cycle: DataCycle) -> URL {
             let date = Self.dateComponent(for: cycle)
@@ -99,16 +105,74 @@ struct TilePipeline {
     let logger: (String) -> Void
 
     /// The cycle whose chart directory actually contains this source.
-    /// Enroute editions only exist every other cycle, so a request during an
+    /// Dated editions only exist every other cycle, so a request during an
     /// off cycle walks back one cycle. Throws if neither exists.
     func resolveEditionCycle(for source: Source, requested: DataCycle) async throws -> DataCycle {
-        guard source.isEnroute else { return requested }
+        guard source.isFiftySixDayEdition else { return requested }
         for candidate in [requested, requested.previous()] {
             if try await remoteExists(source.remoteURL(for: candidate)) {
                 return candidate
             }
         }
-        throw IngestError("No enroute edition found for \(source.cacheStem) at \(Source.dateComponent(for: requested)) or the prior cycle")
+        throw IngestError("No edition found for \(source.cacheStem) at \(Source.dateComponent(for: requested)) or the prior cycle")
+    }
+
+    /// Does band 1 carry a palette? `-expand rgba` is only valid when it does,
+    /// and errors out otherwise. Asking the raster beats hardcoding it per
+    /// product: sectionals are paletted, enroute panels are already RGB, and
+    /// the FAA is free to change either without telling us.
+    private func sourceHasColorTable(_ tifPath: String) throws -> Bool {
+        let executable = gdalBinDirectory.map { "\($0)/gdalinfo" } ?? "gdalinfo"
+        let info = try capturingIngestProcess(executable, [tifPath], searchPath: gdalBinDirectory == nil)
+        return info.contains("Color Table") || info.contains("ColorInterp=Palette")
+    }
+
+    private static let maxAttempts = 3
+
+    /// A cached zip counts only if it still starts with the PK signature, so a
+    /// truncated leftover is re-fetched instead of failing later in `unzip`.
+    private static func cachedZipIsUsable(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        return looksLikeZip((try? handle.read(upToCount: 4)) ?? Data())
+    }
+
+    private static func looksLikeZip(_ head: Data) -> Bool {
+        head.prefix(2).elementsEqual([0x50, 0x4B])  // "PK"
+    }
+
+    /// Downloads one chart zip, retrying only what retrying can fix.
+    private func fetchChart(_ remote: URL) async throws -> Data {
+        var lastReason = "no attempt made"
+        for attempt in 1...Self.maxAttempts {
+            var request = URLRequest(url: remote)
+            request.setValue("Mozilla/5.0 (Macintosh) FlightBag-Ingest/1.0", forHTTPHeaderField: "User-Agent")
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                if status == 200 {
+                    guard Self.looksLikeZip(data.prefix(4)) else {
+                        throw IngestError("HTTP 200 but body is not a zip (\(data.count) bytes)")
+                    }
+                    return data
+                }
+                // 4xx means the edition genuinely is not there — and edition
+                // resolution has already walked back a cycle by this point, so
+                // retrying cannot help.
+                if (400..<500).contains(status), status != 429 {
+                    throw IngestError("HTTP \(status)")
+                }
+                lastReason = "HTTP \(status)"
+            } catch let error as IngestError {
+                throw error
+            } catch {
+                lastReason = "\(error)"
+            }
+            if attempt < Self.maxAttempts {
+                try await Task.sleep(nanoseconds: UInt64(attempt) * 2_000_000_000)
+            }
+        }
+        throw IngestError("\(lastReason) after \(Self.maxAttempts) attempts")
     }
 
     func run(source: Source, cycle: DataCycle, output: String) async throws {
@@ -117,16 +181,18 @@ struct TilePipeline {
 
         // 1. Download & extract.
         let zipURL = chartDir.appendingPathComponent("\(source.cacheStem)_\(cycle.id).zip")
-        if !FileManager.default.fileExists(atPath: zipURL.path) {
+        if !Self.cachedZipIsUsable(at: zipURL) {
             let remote = source.remoteURL(for: cycle)
             logger("Downloading \(remote.absoluteString)…")
-            var request = URLRequest(url: remote)
-            request.setValue("Mozilla/5.0 (Macintosh) FlightBag-Ingest/1.0", forHTTPHeaderField: "User-Agent")
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                throw IngestError("Chart download failed: HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
-            }
-            try data.write(to: zipURL)
+            let data = try await fetchChart(remote)
+            // Stage and rename: these are hundreds of megabytes, and a run
+            // killed mid-write would otherwise leave a truncated zip that the
+            // next run treats as cached.
+            let partial = zipURL.appendingPathExtension("partial")
+            try? FileManager.default.removeItem(at: partial)
+            try data.write(to: partial)
+            try? FileManager.default.removeItem(at: zipURL)
+            try FileManager.default.moveItem(at: partial, to: zipURL)
         } else {
             logger("Using cached \(zipURL.lastPathComponent)")
         }
@@ -146,11 +212,12 @@ struct TilePipeline {
         let rgba = extractDir.appendingPathComponent("rgba.tif").path
         let mercator = extractDir.appendingPathComponent("mercator.tif").path
         let warpInput: String
-        if source.needsPaletteExpansion {
+        if try sourceHasColorTable(tifPath) {
             logger("Expanding palette to RGBA…")
             try gdal("gdal_translate", ["-q", "-expand", "rgba", tifPath, rgba])
             warpInput = rgba
         } else {
+            logger("Already RGB — skipping palette expansion")
             warpInput = tifPath
         }
         logger("Reprojecting to EPSG:3857…")
@@ -165,9 +232,11 @@ struct TilePipeline {
         try? FileManager.default.removeItem(atPath: rgba)
         try? FileManager.default.removeItem(atPath: mercator)
 
-        // 56-day enroute editions outlive their cycle; the sidecar tells the
-        // manifest builder how long to carry the artifact forward.
-        if source.isEnroute {
+        // 56-day editions outlive their cycle; the sidecar tells the manifest
+        // builder how long to carry the artifact forward. Sectionals need this
+        // as much as enroute panels — without it a sectional whose edition sits
+        // under the prior cycle drops out of the next cycle's manifest.
+        if source.isFiftySixDayEdition {
             let expires = cycle.next().next().effectiveDate
             let sidecar = output + ".expires"
             try ISO8601DateFormatter().string(from: expires).write(toFile: sidecar, atomically: true, encoding: .utf8)
@@ -276,6 +345,16 @@ func runIngestProcess(_ executable: String, _ arguments: [String], searchPath: B
     process.waitUntilExit()
     guard process.terminationStatus == 0 else {
         let message = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        throw IngestError("\(executable) failed (\(process.terminationStatus)): \(message.prefix(300))")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        // Report the ERROR lines when GDAL gives us any. Truncating from the
+        // front used to bury the real cause behind a 290-character EPSG:4269
+        // warning that GDAL emits on every FAA chart — 48 enroute panels failed
+        // with nothing in the log but that warning.
+        let errorLines = message
+            .split(separator: "\n")
+            .filter { $0.contains("ERROR") || $0.lowercased().hasPrefix("error") }
+            .joined(separator: "; ")
+        let detail = errorLines.isEmpty ? String(message.suffix(400)) : errorLines
+        throw IngestError("\(executable) failed (\(process.terminationStatus)): \(detail)")
     }
 }

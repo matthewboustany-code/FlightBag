@@ -77,24 +77,53 @@ struct PlateBundler {
         try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
 
         var downloaded = 0
+        var cached = 0
+        var failures: [(row: PlateRow, reason: String)] = []
+
         for (index, row) in rows.enumerated() {
             let target = stage.appendingPathComponent("\(row.airportId)/\(row.pdfName)")
-            if !FileManager.default.fileExists(atPath: target.path) {
+            if Self.stagedPlateIsUsable(at: target) {
+                cached += 1
+            } else {
                 try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
-                var request = URLRequest(url: row.url)
-                request.setValue("Mozilla/5.0 (Macintosh) FlightBag-Ingest/1.0", forHTTPHeaderField: "User-Agent")
-                let (data, response) = try await URLSession.shared.data(for: request)
-                guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-                    throw IngestError("Plate download failed (\(row.url.lastPathComponent)): HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
+                do {
+                    let data = try await fetchPlate(row)
+                    // Stage to a sibling path and rename. A direct write that is
+                    // interrupted — OOM kill, host suspend — leaves a truncated
+                    // PDF that every later run would treat as cached and bundle.
+                    let partial = target.appendingPathExtension("partial")
+                    try? FileManager.default.removeItem(at: partial)
+                    try data.write(to: partial)
+                    try? FileManager.default.removeItem(at: target)
+                    try FileManager.default.moveItem(at: partial, to: target)
+                    downloaded += 1
+                } catch {
+                    // Collect rather than abort: one run should report every bad
+                    // plate, not force a re-download of the region per failure.
+                    failures.append((row, "\(error)"))
                 }
-                try data.write(to: target)
-                downloaded += 1
             }
             if (index + 1) % 25 == 0 || index + 1 == rows.count {
                 logger("\(index + 1)/\(rows.count) plates staged")
             }
         }
-        logger("\(downloaded) fetched, \(rows.count - downloaded) cached")
+
+        guard failures.isEmpty else {
+            let shown = failures.prefix(20)
+                .map { "  \($0.row.airportId)/\($0.row.pdfName): \($0.reason)" }
+                .joined(separator: "\n")
+            let more = failures.count > 20 ? "\n  …and \(failures.count - 20) more" : ""
+            throw IngestError("""
+                \(failures.count) of \(rows.count) plates failed for \(regionId); bundle not written:
+                \(shown)\(more)
+                """)
+        }
+        // Completeness is checkable, so check it: the bundle must account for
+        // every row the database claims for this region.
+        guard downloaded + cached == rows.count else {
+            throw IngestError("Plate accounting mismatch for \(regionId): \(downloaded) fetched + \(cached) cached != \(rows.count) expected")
+        }
+        logger("\(downloaded) fetched, \(cached) cached")
 
         // zip runs from the staging dir, so the output path must be absolute.
         let absoluteOutput = URL(fileURLWithPath: output).standardizedFileURL.path
@@ -107,5 +136,57 @@ struct PlateBundler {
         try runIngestProcess("/usr/bin/zip", ["-q", "-r", "-X", absoluteOutput, "."], currentDirectory: stage)
         logger("Bundle written to \(output)")
         return rows.count
+    }
+
+    private static let maxAttempts = 3
+
+    /// A staged file counts as cached only if it still looks like a PDF, so a
+    /// truncated leftover from an interrupted run is re-fetched rather than
+    /// silently shipped.
+    private static func stagedPlateIsUsable(at url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        return looksLikePDF((try? handle.read(upToCount: 1024)) ?? Data())
+    }
+
+    /// aeronav occasionally answers 200 with an HTML error page; without this
+    /// the page gets zipped into the bundle as though it were a chart.
+    private static func looksLikePDF(_ head: Data) -> Bool {
+        head.range(of: Data("%PDF-".utf8)) != nil
+    }
+
+    /// Fetches one plate, retrying only what retrying can fix.
+    private func fetchPlate(_ row: PlateRow) async throws -> Data {
+        var lastReason = "no attempt made"
+        for attempt in 1...Self.maxAttempts {
+            var request = URLRequest(url: row.url)
+            request.setValue("Mozilla/5.0 (Macintosh) FlightBag-Ingest/1.0", forHTTPHeaderField: "User-Agent")
+            do {
+                let (data, response) = try await URLSession.shared.data(for: request)
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                if status == 200 {
+                    guard Self.looksLikePDF(data.prefix(1024)) else {
+                        throw IngestError("HTTP 200 but body is not a PDF (\(data.count) bytes)")
+                    }
+                    return data
+                }
+                // 4xx other than rate limiting is the FAA stating this URL is
+                // wrong. Retrying cannot change that, and 404 in particular
+                // means the metafile and the file server disagree.
+                if (400..<500).contains(status), status != 429 {
+                    throw IngestError("HTTP \(status)")
+                }
+                lastReason = "HTTP \(status)"
+            } catch let error as IngestError {
+                throw error
+            } catch {
+                // Timeouts, resets, DNS blips — the cases worth another go.
+                lastReason = "\(error)"
+            }
+            if attempt < Self.maxAttempts {
+                try await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000)
+            }
+        }
+        throw IngestError("\(lastReason) after \(Self.maxAttempts) attempts")
     }
 }

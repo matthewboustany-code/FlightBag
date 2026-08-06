@@ -76,12 +76,25 @@ final class DTPPMetafileParser: NSObject, XMLParserDelegate {
     private var chartName = ""
     private var pdfName = ""
     private var parseError: Error?
+    private var closedRootElement = false
 
     func parse(data: Data) throws -> [DTPPChartRecord] {
         let parser = XMLParser(data: data)
         parser.delegate = self
-        guard parser.parse() else {
-            throw parseError ?? parser.parserError ?? IngestError("d-TPP metafile parse failed")
+        if !parser.parse() {
+            // On Linux, XMLParser is swift-corelibs-foundation's libxml2 wrapper,
+            // which enforces XML_MAX_TEXT_LENGTH (10 MB) because it never sets
+            // XML_PARSE_HUGE. The d-TPP metafile is ~16 MB, so parse() reports
+            // NSXMLParserInternalError at EOF even though libxml2 delivered every
+            // element first — the record count matches the file exactly. Darwin's
+            // NSXMLParser has no such limit and returns true here.
+            //
+            // Trust the document, not the return value: a genuinely truncated or
+            // malformed file never closes the root element, so that is the signal
+            // worth gating on.
+            guard closedRootElement else {
+                throw parseError ?? parser.parserError ?? IngestError("d-TPP metafile parse failed")
+            }
         }
         return records
     }
@@ -121,12 +134,21 @@ final class DTPPMetafileParser: NSObject, XMLParserDelegate {
             let code = chartCode.trimmingCharacters(in: .whitespacesAndNewlines)
             let name = chartName.trimmingCharacters(in: .whitespacesAndNewlines)
             let pdf = pdfName.trimmingCharacters(in: .whitespacesAndNewlines)
-            // DELETED_JOB entries have no PDF; skip anything unrenderable.
-            if let airportId = currentAirportId, !pdf.isEmpty, !name.isEmpty, pdf.uppercased().hasSuffix(".PDF") {
+            // Charts withdrawn this cycle carry useraction "D" and the literal
+            // sentinel pdf_name DELETED_JOB.PDF (43 of them in 2607). That name
+            // ends in ".PDF", so a suffix check alone lets them through — they
+            // then 404 on aeronav and take the whole plate bundle down with
+            // them. They are also not real charts, so they have no business in
+            // the plate table where the app would list them.
+            let upperPDF = pdf.uppercased()
+            if let airportId = currentAirportId, !pdf.isEmpty, !name.isEmpty,
+               upperPDF.hasSuffix(".PDF"), upperPDF != "DELETED_JOB.PDF" {
                 records.append(DTPPChartRecord(airportId: airportId, chartCode: code, chartName: name, pdfName: pdf))
             }
         } else if elementName == "airport_name" {
             currentAirportId = nil
+        } else if elementName == "digital_tpp" {
+            closedRootElement = true
         }
     }
 

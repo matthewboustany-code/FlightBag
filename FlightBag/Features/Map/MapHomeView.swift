@@ -234,8 +234,17 @@ struct MapHomeView: View {
         // Re-scan on first appearance and whenever a download installs or
         // deletes chart tiles, so the map switches to offline immediately.
         .task(id: environment.downloadCenter.chartsVersion) {
-            layers.availableCharts = environment.chartStore.availableCharts()
-            layers.availableBasemaps = environment.chartStore.availableBasemaps()
+            let store = environment.chartStore
+            layers.availableCharts = store.availableCharts()
+            layers.availableBasemaps = store.availableBasemaps()
+            // Finding a chart's collar means reading a few dozen tiles, so a
+            // new download draws unclipped for a second and then settles.
+            // Basemaps are seamless and skip this.
+            let tileSets = layers.availableCharts.map(\.url)
+            let analysed = await Task.detached(priority: .utility) {
+                ChartCoverageDetector.prepare(tileSets: tileSets)
+            }.value
+            if analysed { layers.availableCharts = store.availableCharts() }
         }
         // Chart sources arrive with the manifest, so the map picks up a new
         // authority on the next fetch rather than the next app release.
@@ -349,7 +358,8 @@ struct MapHomeView: View {
                 Label(
                     offline.isEmpty
                         ? "\(chart.displayName) · FAA streaming"
-                        : "\(chart.displayName) · offline (\(offline.map(\.name).joined(separator: ", ")))",
+                        : "\(chart.displayName) · offline (\(offline.map(\.name).joined(separator: ", ")))"
+                            + (layers.streamChartGaps ? " + streaming" : ""),
                     systemImage: offline.isEmpty ? "antenna.radiowaves.left.and.right" : "internaldrive"
                 )
             }
@@ -442,7 +452,11 @@ private struct LayersPanel: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     } else {
-                        Text("Using downloaded tiles: \(layers.offlineSetsForSelectedChart.map(\.name).joined(separator: ", ")). Areas outside them are blank — streaming fills in once they're removed.")
+                        Toggle("Stream outside downloads", isOn: $layers.streamChartGaps)
+                            .accessibilityIdentifier("layers.streamGaps")
+                        Text(layers.streamChartGaps
+                             ? "Using downloaded tiles: \(layers.offlineSetsForSelectedChart.map(\.name).joined(separator: ", ")). Anywhere they don't cover is streamed while you have internet."
+                             : "Using downloaded tiles only: \(layers.offlineSetsForSelectedChart.map(\.name).joined(separator: ", ")). Areas outside them stay blank.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

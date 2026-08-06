@@ -111,7 +111,13 @@ struct IngestAllCommand: AsyncCommand {
         private static func regionIds(_ selection: Selection) throws -> [String] {
             switch selection {
             case .none: return []
-            case .all: return ChartCatalog.regionIds
+            case .all:
+                // Terminal procedures are an FAA d-TPP product, so only US
+                // states have them. ChartCatalog.regionIds also carries the
+                // open flightmaps FIRs (OFM-LOVV and friends), and handing one
+                // of those to PlateBundler is a hard error — "all" used to kill
+                // the run as soon as it walked past the last US state.
+                return ChartCatalog.regionIds.filter { $0.hasPrefix("US-") && $0.count == 5 }
             case .list(let raw):
                 return try raw.map {
                     let id = $0.uppercased().hasPrefix("US-") ? $0.uppercased() : "US-\($0.uppercased())"
@@ -189,12 +195,29 @@ struct IngestAllCommand: AsyncCommand {
         console.info("Ingest-all for cycle \(cycle.id) → \(cycleDir.path)")
 
         try await buildDatabase(cycle: cycle, cycleDir: cycleDir, workDir: workDir, console: console)
-        try await buildTiles(scope: scope, cycle: cycle, artifactsRoot: artifactsRoot, workDir: workDir, pipeline: pipeline, console: console)
+        let chartFailures = try await buildTiles(scope: scope, cycle: cycle, artifactsRoot: artifactsRoot, workDir: workDir, pipeline: pipeline, console: console)
         try await OpenFlightMapsIngestor(workDirectory: workDir) { console.info($0) }
             .run(cycle: cycle, firs: scope.openFlightMapsFIRs, into: cycleDir)
         try await buildBasemap(policy: scope.basemap, cycle: cycle, artifactsRoot: artifactsRoot, workDir: workDir, pipeline: pipeline, console: console)
-        try await buildPlates(regions: scope.plateRegions, cycle: cycle, cycleDir: cycleDir, workDir: workDir, console: console)
+        let plateFailures = try await buildPlates(regions: scope.plateRegions, cycle: cycle, cycleDir: cycleDir, workDir: workDir, console: console)
         try writeManifest(artifactsRoot: artifactsRoot, baseURL: baseURL, currentCycle: manifestCycle, console: console)
+
+        // Whatever failed is published-as-absent: the manifest above lists only
+        // what exists, so the app offers the rest and stays usable. Do not
+        // write .complete — that marker is what makes the next run a no-op, and
+        // withholding it is exactly what makes tomorrow's cron retry the gaps.
+        let failures = chartFailures + plateFailures
+        guard failures.isEmpty else {
+            for failure in failures {
+                console.warning("  \(failure)")
+            }
+            throw IngestError("""
+                \(failures.count) artifact(s) failed for cycle \(cycle.id) \
+                (\(chartFailures.count) chart(s), \(plateFailures.count) plate bundle(s)). \
+                Everything else is published and the manifest is current; the cycle is \
+                deliberately left incomplete so the next run retries only these.
+                """)
+        }
 
         try ISO8601DateFormatter().string(from: Date())
             .write(to: marker, atomically: true, encoding: .utf8)
@@ -213,9 +236,15 @@ struct IngestAllCommand: AsyncCommand {
         }
         let current = DataCycle.current()
         let next = current.next()
-        // Any sectional works as the publication probe; San Antonio is small
-        // and has existed forever. A failed probe just means "not yet".
-        let probe = TilePipeline.Source.sectional(chart: "San_Antonio").remoteURL(for: next)
+        // Probe the d-TPP metafile, NOT a sectional. VFR sectionals are 56-day
+        // products, so they only publish on every other 28-day cycle: probing
+        // one makes odd cycles look unpublished forever, and a daily cron would
+        // sit on an expiring cycle rather than rolling over. The d-TPP metafile
+        // is 28-day, publishes with the cycle, and aeronav answers HEAD for it
+        // (nfdc, which serves NASR, returns 503 to HEAD — so NASR cannot be the
+        // probe even though it is also 28-day).
+        // A failed probe just means "not yet".
+        let probe = URL(string: "https://aeronav.faa.gov/d-tpp/\(next.id)/xml_data/d-tpp_Metafile.xml")!
         if (try? await pipeline.remoteExists(probe)) == true {
             console.info("FAA has published cycle \(next.id) — targeting it")
             return next
@@ -279,7 +308,17 @@ struct IngestAllCommand: AsyncCommand {
         console.success("db/aero.sqlite published")
     }
 
-    private func buildTiles(scope: Scope, cycle: DataCycle, artifactsRoot: URL, workDir: URL, pipeline: TilePipeline, console: Console) async throws {
+    /// Builds every chart in scope and returns the ones that failed.
+    ///
+    /// Unlike a plate bundle, charts publish individually and the manifest is
+    /// generated from what is actually on disk, so a missing sectional is
+    /// simply not offered rather than silently absent from inside a zip. That
+    /// makes it safe — better, in fact — to finish the run and report at the
+    /// end: everything that did build gets published and is usable today, and
+    /// the caller withholds the `.complete` marker so the next run retries only
+    /// what is missing.
+    @discardableResult
+    private func buildTiles(scope: Scope, cycle: DataCycle, artifactsRoot: URL, workDir: URL, pipeline: TilePipeline, console: Console) async throws -> [String] {
         var sources: [TilePipeline.Source] = scope.sectionals.map { .sectional(chart: $0) }
         sources += scope.ifrLowPanels.map { .enrouteLow(panel: $0) }
         sources += scope.ifrHighPanels.map { .enrouteHigh(panel: $0) }
@@ -291,10 +330,11 @@ struct IngestAllCommand: AsyncCommand {
             console.info("GDAL: \(try pipeline.preflightGDAL())")
         }
 
+        var failures: [String] = []
         for source in sources {
-            // Enroute editions may belong to the prior cycle (56-day cadence);
+            // Dated editions may belong to the prior cycle (56-day cadence);
             // check both candidate homes before paying for a network probe.
-            let candidates = source.isEnroute ? [cycle, cycle.previous()] : [cycle]
+            let candidates = source.isFiftySixDayEdition ? [cycle, cycle.previous()] : [cycle]
             if let existing = candidates.first(where: { candidate in
                 FileManager.default.fileExists(
                     atPath: artifactsRoot.appendingPathComponent("\(candidate.id)/tiles/\(source.artifactFileName)").path
@@ -303,19 +343,27 @@ struct IngestAllCommand: AsyncCommand {
                 console.info("tiles/\(source.artifactFileName) exists (\(existing.id)) — skipping")
                 continue
             }
-            let editionCycle = try await pipeline.resolveEditionCycle(for: source, requested: cycle)
-            let temp = workDir.appendingPathComponent(source.artifactFileName)
-            try await pipeline.run(source: source, cycle: editionCycle, output: temp.path)
-            let final = artifactsRoot.appendingPathComponent("\(editionCycle.id)/tiles/\(source.artifactFileName)")
-            try publish(temp, to: final)
-            if source.isEnroute {
-                try publish(
-                    URL(fileURLWithPath: temp.path + ".expires"),
-                    to: URL(fileURLWithPath: final.path + ".expires")
-                )
+            do {
+                let editionCycle = try await pipeline.resolveEditionCycle(for: source, requested: cycle)
+                let temp = workDir.appendingPathComponent(source.artifactFileName)
+                try await pipeline.run(source: source, cycle: editionCycle, output: temp.path)
+                let final = artifactsRoot.appendingPathComponent("\(editionCycle.id)/tiles/\(source.artifactFileName)")
+                try publish(temp, to: final)
+                if source.isFiftySixDayEdition {
+                    try publish(
+                        URL(fileURLWithPath: temp.path + ".expires"),
+                        to: URL(fileURLWithPath: final.path + ".expires")
+                    )
+                }
+                console.success("tiles/\(source.artifactFileName) published under \(editionCycle.id)")
+            } catch {
+                // One bad chart used to cost the whole run — including the
+                // plates and manifest that come after it. Record and continue.
+                console.warning("tiles/\(source.artifactFileName) FAILED: \(error)")
+                failures.append("\(source.artifactFileName): \(error)")
             }
-            console.success("tiles/\(source.artifactFileName) published under \(editionCycle.id)")
         }
+        return failures
     }
 
     private func buildBasemap(policy: String, cycle: DataCycle, artifactsRoot: URL, workDir: URL, pipeline: TilePipeline, console: Console) async throws {
@@ -346,12 +394,18 @@ struct IngestAllCommand: AsyncCommand {
         }
     }
 
-    private func buildPlates(regions: [String], cycle: DataCycle, cycleDir: URL, workDir: URL, console: Console) async throws {
-        guard !regions.isEmpty else { return }
+    /// Bundles every region in scope and returns the ones that failed. Same
+    /// reasoning as `buildTiles`: one region's bundle is its own artifact, the
+    /// manifest lists what exists, so a bad region should cost that region
+    /// rather than the fifty that come after it.
+    @discardableResult
+    private func buildPlates(regions: [String], cycle: DataCycle, cycleDir: URL, workDir: URL, console: Console) async throws -> [String] {
+        guard !regions.isEmpty else { return [] }
         let db = cycleDir.appendingPathComponent("db/aero.sqlite")
         guard FileManager.default.fileExists(atPath: db.path) else {
             throw IngestError("Plate bundling needs \(db.path); the database stage should have produced it")
         }
+        var failures: [String] = []
         for region in regions {
             let name = "plates_\(region)_\(cycle.id).zip"
             let final = cycleDir.appendingPathComponent("plates/\(name)")
@@ -359,12 +413,18 @@ struct IngestAllCommand: AsyncCommand {
                 console.info("plates/\(name) exists — skipping")
                 continue
             }
-            let temp = workDir.appendingPathComponent(name)
-            let bundler = PlateBundler(workDirectory: workDir) { console.info($0) }
-            let count = try await bundler.run(regionId: region, databasePath: db.path, output: temp.path)
-            try publish(temp, to: final)
-            console.success("plates/\(name) published (\(count) plates)")
+            do {
+                let temp = workDir.appendingPathComponent(name)
+                let bundler = PlateBundler(workDirectory: workDir) { console.info($0) }
+                let count = try await bundler.run(regionId: region, databasePath: db.path, output: temp.path)
+                try publish(temp, to: final)
+                console.success("plates/\(name) published (\(count) plates)")
+            } catch {
+                console.warning("plates/\(name) FAILED: \(error)")
+                failures.append("\(name): \(error)")
+            }
         }
+        return failures
     }
 
     private func writeManifest(artifactsRoot: URL, baseURL: URL, currentCycle: DataCycle, console: Console) throws {

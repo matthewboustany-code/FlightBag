@@ -90,13 +90,16 @@ final class DownloadCenter {
     // MARK: Manifest
 
     func refreshManifest() async {
-        if let fetched = await manifestClient.fetch() {
+        let (fetched, failure) = await manifestClient.fetch()
+        if let fetched {
             manifest = fetched
-            manifestError = nil
+            // A cached manifest still counts as usable, but say so when the
+            // refresh behind it failed rather than showing stale data silently.
+            manifestError = failure
         } else if manifest == nil {
             manifestError = ServerConfig.baseURL == nil
                 ? "No download server configured (Settings → Server)."
-                : "Download server unreachable and nothing cached."
+                : failure ?? "Download server unreachable and nothing cached."
         }
     }
 
@@ -348,15 +351,23 @@ final class DownloadCenter {
             guard let other = DataCycle(id: dir), other < cycle else { continue }
             let stale = cyclesRoot.appendingPathComponent("\(dir)/tiles/\(fileName)")
             if FileManager.default.fileExists(atPath: stale.path) {
-                try? FileManager.default.removeItem(at: stale)
-                try? FileManager.default.removeItem(at: stale.appendingPathExtension("kind"))
-                try? FileManager.default.removeItem(at: stale.appendingPathExtension("authority"))
+                Self.removeTileSet(at: stale)
                 installed = installed.filter { $0.value.relativePath != "\(dir)/tiles/\(fileName)" }
             }
         }
     }
 
     // MARK: Refcounting & disk
+
+    /// Delete an artifact and everything written beside it. Tile sets carry
+    /// `.kind`, `.authority` and `.coverage` sidecars; leaving one behind
+    /// would describe a chart that is no longer there.
+    nonisolated private static func removeTileSet(at url: URL) {
+        try? FileManager.default.removeItem(at: url)
+        for sidecar in ["kind", "authority", "coverage"] {
+            try? FileManager.default.removeItem(at: url.appendingPathExtension(sidecar))
+        }
+    }
 
     /// An artifact is claimed while any record wants its kind for a region
     /// it covers.
@@ -368,12 +379,7 @@ final class DownloadCenter {
 
     private func removeFromDisk(_ artifact: InstalledArtifact) {
         if !artifact.relativePath.isEmpty {
-            let url = cyclesRoot.appendingPathComponent(artifact.relativePath)
-            try? FileManager.default.removeItem(at: url)
-            // Tile sets carry `.kind` and `.authority` sidecars; leaving one
-            // behind would make a deleted chart look present to a future scan.
-            try? FileManager.default.removeItem(at: url.appendingPathExtension("kind"))
-            try? FileManager.default.removeItem(at: url.appendingPathExtension("authority"))
+            Self.removeTileSet(at: cyclesRoot.appendingPathComponent(artifact.relativePath))
         }
         // Plates: remove this bundle's airport dirs unless another installed
         // bundle also provides them.

@@ -133,12 +133,18 @@ final class MapLayersState {
     var basemapEnabled = true
     var availableBasemaps: [ChartStore.ChartSet] = []
 
-    /// Downloaded tile sets backing the selected chart kind (offline wins
-    /// over streaming).
+    /// Downloaded tile sets backing the selected chart kind. They render over
+    /// the streaming layer rather than instead of it.
     var offlineSetsForSelectedChart: [ChartStore.ChartSet] {
         guard let chart else { return [] }
         return availableCharts.filter { $0.kind == chart }
     }
+
+    /// Stream chart tiles for everything the downloaded sets don't cover.
+    /// On by default — the alternative is a blank map one state over — but
+    /// a pilot metering cellular data can turn it off and fly on what is
+    /// genuinely on the device.
+    var streamChartGaps = true
 
     /// Chart sources published by the manifest. Empty until the first
     /// successful fetch, which is why `ChartSource` keeps built-in FAA
@@ -155,17 +161,17 @@ final class MapLayersState {
         var credits: [String] = []
 
         let offline = offlineSetsForSelectedChart
-        if offline.isEmpty {
-            // Streaming: credit whoever's service is being hit.
+        // Offline: the authority travels with the file, so the credit
+        // survives having never fetched a manifest — which is the normal
+        // case in flight, and exactly when the licence still applies.
+        credits += offline.compactMap { $0.authority?.attribution }
+        if offline.isEmpty || streamChartGaps {
+            // Streaming: credit whoever's service is being hit. Both layers
+            // can be on screen at once, so both get credited.
             if let source = ChartSource.streamingSource(for: chart.contentKind, manifestSources: chartSources),
                let attribution = source.attribution {
                 credits.append(attribution)
             }
-        } else {
-            // Offline: the authority travels with the file, so the credit
-            // survives having never fetched a manifest — which is the normal
-            // case in flight, and exactly when the licence still applies.
-            credits += offline.compactMap { $0.authority?.attribution }
         }
 
         var seen = Set<String>()

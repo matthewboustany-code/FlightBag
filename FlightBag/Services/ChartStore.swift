@@ -15,6 +15,10 @@ struct ChartStore: Sendable {
         /// Who published it, from the `.authority` sidecar written at install.
         /// nil for sideloaded sets, whose provenance we genuinely do not know.
         var authority: DataAuthority?
+        /// Where inside the file the chart actually is, from the `.coverage`
+        /// sidecar. nil until `ChartCoverageDetector.prepare` has looked at
+        /// it, which means "draw the whole file", the old behaviour.
+        var coverage: ChartCoverage?
     }
 
     private let cyclesRoot: URL
@@ -85,7 +89,8 @@ struct ChartStore: Sendable {
                     cycleId: cycle,
                     url: url,
                     kind: Self.kind(for: url, fileName: file),
-                    authority: Self.authority(for: url)
+                    authority: Self.authority(for: url),
+                    coverage: ChartCoverageDetector.cached(forTileSet: url)
                 ))
             }
         }
