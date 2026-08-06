@@ -18,7 +18,9 @@ plates and coded procedures remain US-only — see [Data scope](#data-scope).
   raster charts (local MBTiles), aeronautical overlays (waypoints, airways,
   airspace), TFR/SIGMET/G-AIRMET advisories with altitude filtering, NEXRAD
   radar (internet or FIS-B), a two-finger ruler, and SID/STAR vector overlays
-  drawn from CIFP data.
+  drawn from CIFP data. Downloaded sheets are trimmed to their neatline, so a
+  chart's legend panel never covers the chart beside it, and anything they
+  don't cover streams while there's a connection.
 - **Georeferenced plates** — approach plates pinned to the map: FAA IAPs via
   their embedded georef, airport diagrams via runway-shape matching against
   NASR data, and military (DoD) IAPs via RANSAC registration of planview
@@ -46,7 +48,10 @@ plates and coded procedures remain US-only — see [Data scope](#data-scope).
   `Q1013`, CAVOK, m/s wind).
 - **Downloads** — per-region chart/plate/database downloads versioned by
   28-day AIRAC cycle, background `URLSession` with resume, sha256 verify,
-  atomic cycle swap, and freshness badges everywhere.
+  atomic cycle swap, and freshness badges everywhere. Take a whole region in
+  one tap, several regions at once, or pick chart types region by region;
+  artifacts shared between regions download once and are reference-counted on
+  delete.
 
 ## Repository layout
 

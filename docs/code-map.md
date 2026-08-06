@@ -3,7 +3,7 @@
 File-level guide for navigating the codebase without reading everything.
 Companion to [architecture.md](architecture.md), which records the *why*;
 this records the *where*. Regenerate when the layout shifts (line counts
-are approximate as of 2026-07-18; ~18,700 lines of Swift total).
+are approximate as of 2026-08-06; ~28,200 lines of Swift total).
 
 ## Top level
 
@@ -52,6 +52,41 @@ reads "Off", run
 `xcrun simctl spawn booted defaults write Me.FlightBag adsbEnabled -bool YES`
 (editing the plist directly is clobbered by `cfprefsd`).
 
+### Chart rendering, with real charts
+
+Chart bugs are geometry bugs: the demo seed has no tiles, so anything about
+collars, seams, or which layer wins has to be checked against real FAA
+sheets. Sideload them straight into the app's container — no download UI, no
+manifest:
+
+```bash
+# 1. A pair of *neighbouring* sectionals, from the deployed server
+curl -O http://192.168.1.69:8080/artifacts/2607/tiles/Cheyenne_sectional.mbtiles
+curl -O http://192.168.1.69:8080/artifacts/2607/tiles/Omaha_sectional.mbtiles
+
+# 2. Into the container, with the sidecars an install would have written
+TILES="$(xcrun simctl get_app_container booted Me.FlightBag data)/Library/Application Support/FlightBag/cycles/2607/tiles"
+mkdir -p "$TILES" && cp *_sectional.mbtiles "$TILES"
+for f in "$TILES"/*.mbtiles; do printf vfrSectional > "$f.kind"; printf faa > "$f.authority"; done
+
+# 3. Frame the seam between them
+xcrun simctl launch --terminate-running-process booted Me.FlightBag \
+  -initialTab map -hasAcknowledgedDisclaimer YES -mapDemoSkipLocation YES \
+  -mapDemoSpan 3 -mapDemoCenter "42.0,-101.6"
+```
+
+Neighbouring matters, and so does *which* neighbour: a sheet's legend panel
+lies west of its own map area, over the chart next door, and the sets render
+in name order — so the collar only paints over a neighbour whose name sorts
+earlier (Omaha over Cheyenne, but not Billings over Great Falls). Chart
+overlays are also rebuilt only when their key changes, and coverage is part
+of that key, because detection lands a second or two after the chart does.
+
+Collar detection writes a `.coverage` sidecar next to each `.mbtiles`.
+Deleting them forces a re-detect on next launch; writing one by hand with
+`"body": null` reproduces the pre-clipping render exactly, which is how to
+get an honest before/after out of one build.
+
 ## App target (`FlightBag/`)
 
 Dependency direction: **Features → Services → FlightBagCore**. Features never
@@ -65,7 +100,7 @@ touch GRDB or providers directly.
 - `App/DisclaimerView.swift` — first-run legal gate
 
 ### Services (`Services/`) — the app's data layer
-- `AeroDatabase.swift` (~450 ln, largest service) — GRDB read-only wrapper over per-cycle `aero.sqlite`. FTS5 search (`SearchResult`), `AirportDetail`, map queries (`MapWaypoint`, `AirwayLine`), airspace R*Tree lookups. Conforms to `WaypointResolving` for the route parser.
+- `AeroDatabase.swift` (~630 ln, largest service) — GRDB read-only wrapper over per-cycle `aero.sqlite`. FTS5 search (`SearchResult`), `AirportDetail`, map queries (`MapWaypoint`, `AirwayLine`), airspace R*Tree lookups. Conforms to `WaypointResolving` for the route parser.
 - `ChartStore.swift` — discovers downloaded MBTiles chart sets (`ChartSet`) and offline basemaps (`basemap_*` prefix); per-tree byte counts
 - `ChartCoverage.swift` — `ChartCoverage` (where a tile set actually draws chart, as a per-column top/bottom mask in normalized Web Mercator) + `ChartCoverageDetector`, which finds an FAA sheet's map area inside its collar by growing a colour-dense region out of the tiles at ~z8 and tracing its edges. Cached in a `.coverage` sidecar beside the `.mbtiles`; nil `body` means "no collar found, draw the whole file"
 - `PlateStore.swift` — actor; downloads/caches terminal procedure PDFs
@@ -89,13 +124,13 @@ touch GRDB or providers directly.
 
 ### Features (`Features/`)
 **Map** — the most complex feature; MapKit, not SwiftUI Map:
-- `MapHomeView.swift` (~365 ln) — SwiftUI host: layer pickers, search, `MapInspection` state
+- `MapHomeView.swift` (~660 ln) — SwiftUI host: layer pickers, search, `MapInspection` state
 - `MapInfoPanel.swift` — non-modal info card over the map (airport detail / tapped advisories); bottom card on compact, floating side card on iPad — replaced the old blocking sheets so the map stays scrubbable
 - `PlateOverlay.swift` — `PlateOverlay` + `PlateOverlayRenderer`: a rasterized approach plate pinned to its geographic footprint (affine from 3 corners), opacity via the shared `overlayAlphas` plumbing; active plate lives on `AppEnvironment.activePlateOverlay`, opacity on `MapLayersState.plateOpacity`
 - `RouteEditorPanel.swift` — `RouteWaypointAnnotation`/-`View` (labeled markers, tintable: magenta route / blue procedure) + `ProcedurePolyline` tag class + the non-modal route editor card (delete/reorder/add, edits write back to `AppEnvironment.activeMapRoute`; `ActiveMapRoute` carries identified points, airway intermediates tagged `via`)
 - SID/STAR vector overlays: `ActiveMapProcedure` (AppEnvironment; branches = common + every transition, assembled from `AeroDatabase.procedureLegs`) → `Coordinator.syncProcedure` draws dashed-blue polylines + deduped fix markers; entry via `ProceduresSection` (Airports) or `-mapDemoProcedure`. Rasters are NOT georeferenced for SIDs/STARs (not to scale) — this is the deliberate alternative
 - `MapRuler.swift` — `TwoFingerHoldGestureRecognizer` (two fingers held ~0.35 s; loses to pinch if they move) + `RulerHUDView` (screen-space dashed line + distance/course readout via NavMath; zoom/rotate suspended while measuring)
-- `EFBMapView.swift` (~510 ln) — `UIViewRepresentable` wrapping `MKMapView`; `Coordinator` owns all delegate logic, annotations (airport/waypoint/ownship), overlay z-ordering, tap handling
+- `EFBMapView.swift` (~980 ln) — `UIViewRepresentable` wrapping `MKMapView`; `Coordinator` owns all delegate logic, annotations (airport/waypoint/ownship), overlay z-ordering, tap handling
 - `MapLayersState.swift` — `ChartKind` (VFR/IFR-low/IFR-high) + observable toggle state for all layers
 - `MBTilesOverlay.swift` — `MKTileOverlay` reading local MBTiles via GRDB, clipped to the chart's `ChartCoverage` body (+ `ChartTileMask`, which re-cuts the tiles that straddle the neatline)
 - `StreamingChartOverlay.swift` — FAA tile streaming with over-zoom (uses `TileResampler.swift`); sits *under* the downloaded sets to fill what they don't cover, and skips tiles a download paints in full
@@ -121,7 +156,7 @@ touch GRDB or providers directly.
 
 Four targets, dependency order `FBModels ← FBFlightPlan / FBProviders`; `FBGDL90` standalone:
 
-- **FBModels** — zero-dep domain types: `Airport`, `Airspace`, `Advisory`, `Weather`, `Coordinate`, `AltitudeBand`, `DataCycle` (AIRAC math), `DataAuthority` (decodes unknown values to `.unknown` so one unfamiliar authority can't fail a whole manifest), `DownloadManifest`, `PlateMetadata`, `Jurisdiction`/`RuleSet` (ICAO-prefix → country → rules), `UnitPreferences` (display-only conversion; storage stays hPa/SM/ft/NM/kt), `MagneticModel` (`WorldMagneticModel` — WMM2025 spherical-harmonic declination worldwide, with a validity window; coefficients in `WMM2025Coefficients.swift`, checked against NOAA's 100 published test values)
+- **FBModels** — zero-dep domain types: `Airport`, `Airspace`, `Advisory`, `Weather`, `Coordinate`, `AltitudeBand`, `DataCycle` (AIRAC math), `DataAuthority` (decodes unknown values to `.unknown` so one unfamiliar authority can't fail a whole manifest), `DownloadManifest` (`DownloadProduct.ContentKind` also owns the UI's names and ordering — `displayName` + `offeredPerRegion` — so adding a kind is one edit, not three), `PlateMetadata`, `Jurisdiction`/`RuleSet` (ICAO-prefix → country → rules), `UnitPreferences` (display-only conversion; storage stays hPa/SM/ft/NM/kt), `MagneticModel` (`WorldMagneticModel` — WMM2025 spherical-harmonic declination worldwide, with a validity window; coefficients in `WMM2025Coefficients.swift`, checked against NOAA's 100 published test values)
 - **FBFlightPlan** — `ICAOFlightPlan`, `FlightPlanValidator` (same rules client+server — the package's reason to exist), `RouteParser` (needs a `WaypointResolving`), `NavLog` (legs carry true *and* magnetic course; variation is computed per leg from the WMM, not read off the departure airport), `NavMath`
 - **FBProviders** — `HTTPGetting` (injected transport) + protocols (`WeatherProvider`, `NotamProvider`, `PlateProvider`, `FilingService`) and FAA impls: `AviationWeatherGovProvider`, `TFRProvider`, `AirspaceProvider`, `WindsAloftProvider`, `AdvisoryProviders`, `FAANotamProvider`. The last is the only one that authenticates, and the only one that is rate-limited: `NMSTokenStore` (actor; concurrent callers join one in-flight exchange, refreshed 60 s early) and `NMSRequestPacer` (actor; holds every outbound call — token exchange included — to ~1/s for Apigee's spike arrest, one retry on 429). Its wire decoding is deliberately forgiving because the FAA types the GeoJSON feature body as an untyped map: values decode whether or not they are quoted, non-Point geometries are dropped rather than throwing, and a feature that yields no id or text is skipped instead of failing the response. The fixtures are the spec's published shapes, not invented ones — `nms_notams_faa_sample.json` is the FAA's own example verbatim
 - **FBGDL90** — `GDL90Deframer` + `GDL90Message`: pure byte-level ADS-B decoding, no sockets
@@ -145,7 +180,7 @@ package dir) — the XCUITest ban applies only to the app's UI tests.
 - `Commands/IngestAllCommand.swift` — `ingest-all`: the scheduled-job orchestrator. Picks the target cycle itself (HEAD-probes whether the FAA published the next one), no-ops via a `{cycle}/.complete` marker, skips artifacts that already exist (rerun = resume), runs db → tiles → basemap → plates → manifest, and rebuilds the manifest when the calendar rolls into a pre-built cycle. Scope comes from `FLIGHTBAG_*` env vars (see `Server/.env.example`); the db always builds, charts are opt-in. The db step is NASR → OurAirports → `buildIndexes` → d-TPP → CIFP: the worldwide step has to sit between NASR (whose rows tell `coveredCountries` what to skip) and the index build (which is what makes it searchable)
 - `Ingest/` — `NASRIngestor` (~380 ln, FAA NASR CSV → sqlite), `DTPPIngestor` (plates), `AeroDatabaseBuilder` (builds per-cycle `aero.sqlite`), `TilePipeline` (`Source`: sectional / enroute low+high / Natural Earth basemap → MBTiles; enroute editions are 56-day, get `.expires` sidecars and `resolveEditionCycle`), `PlateBundler` (per-state plate zips, `{airportId}/{pdfName}` layout matching PlateStore), `ManifestBuilder` (artifact tree → manifest: sha256 sidecar cache, next-cycle + carry-forward), `ChartCatalog` (regions + sectional→state fallback table), `RegionBounds` (MBTiles `bounds` ∩ state bboxes → `regionIds`), `CSVTable` (parsing helper)
 - Artifact layout: `Public/artifacts/{cycle}/{tiles|plates|basemap|db}/…` + `manifest.json` (gitignored; maps 1:1 to object-store keys later)
-- Deployment: `Server/Dockerfile` (multi-stage; one image = serve + ingest, GDAL/zip/unzip in runtime stage; build context is the **repo root** for the FlightBagCore path dep), `Server/docker-compose.yml` (`server` service + `ingest` behind a compose profile), `Server/.env.example` (all `FLIGHTBAG_*` config, notably `FLIGHTBAG_BASE_URL` baked into manifest URLs), `Server/scripts/ingest-cron.sh` (daily cron trigger), `Server/DEPLOY.md` (NAS bring-up guide). Not yet exercised by a real Docker build — no container runtime on the dev Mac
+- Deployment: `Server/Dockerfile` (multi-stage; one image = serve + ingest, GDAL/zip/unzip in runtime stage; build context is the **repo root** for the FlightBagCore path dep), `Server/docker-compose.yml` (`server` service + `ingest` behind a compose profile), `Server/.env.example` (all `FLIGHTBAG_*` config, notably `FLIGHTBAG_BASE_URL` baked into manifest URLs), `Server/scripts/ingest-cron.sh` (daily cron trigger), `Server/DEPLOY.md` (bring-up guide + the record of what has actually been built). Proven end to end: cycle 2608 was built full-scope on the Debian/Proxmox host and 2607 is served to the app over the LAN
 
 ## Where to start for common tasks
 
@@ -167,7 +202,9 @@ package dir) — the XCUITest ban applies only to the app's UI tests.
 | "Why is this feature missing abroad?" | FBModels `Capability` + `RuleSet.capabilities`, app-side `CapabilityNotice.swift` |
 | Magnetic variation / magnetic courses | FBModels `MagneticModel.swift`; consumed by `NavLogBuilder` (per leg, at the planned departure date) and `AirportDetailView.magneticVariationRow`. Updating the model = drop in the next `WMM.COF` and change the epoch/validity |
 | Worldwide airspace | `OpenAIPAirspaceProvider` (CC BY-NC, needs a key; `AirspaceStore` picks it by viewport centre) |
-| Where a chart layer's tiles come from | FBModels `ChartSource` (manifest-carried: authority, tile template, zoom range, regions). `ChartKind` is now only a *category*. Built-in FAA descriptors exist solely as a pre-manifest fallback |
+| Where a chart layer's tiles come from | FBModels `ChartSource` (manifest-carried: authority, tile template, zoom range, regions). `ChartKind` is now only a *category*. Built-in FAA descriptors exist solely as a pre-manifest fallback. Note the FAA VFR service starts at **z8** — zoomed out past that, undownloaded areas draw nothing, and always did |
+| "A white block is covering my chart" / anything clipped | `ChartCoverage.swift`. The collar is detected from the tiles, cached in a `.coverage` sidecar, and applied by `MBTilesOverlay`; a nil `body` means "draw everything", which is the pre-2026-08 behaviour and the safe fallback whenever detection is unsure. Tuning constants (`cell`, `seedChroma`/`growChroma`, `insetCells`) were calibrated against real sectionals — change them and re-check against real ones, not the synthetic test sheet |
+| Which chart layer wins where | `EFBMapView.syncOverlays` builds the chart group bottom-up: streaming first, then each downloaded set in name order, all above the basemap and below radar. `MapLayersState.streamChartGaps` is the pilot-facing switch; `StreamingChartOverlay` skips any tile a download paints in full |
 | Adding a chart authority | server `ChartCatalog.chartSources` + `regions`, plus an ingestor. `OpenFlightMapsIngestor` is the simplest example — OFM publishes MBTiles directly, so ingest is a verified copy with no GDAL step |
 | Source attribution | `DataAuthority.attribution`; carried to disk by DownloadCenter's `.authority` sidecar, read by `ChartStore`, rendered by `MapHomeView.attributionStrip`. Works offline by design — the licences do not lapse without a network |
 | Downloads / cycles | FBModels `DataCycle` + `DownloadManifest`/`Region`, `DownloadCenter.swift`, `DownloadsHomeView.swift` |
