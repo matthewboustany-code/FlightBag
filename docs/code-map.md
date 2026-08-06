@@ -23,6 +23,7 @@ Launch args seed deterministic state for `xcrun simctl` screenshots:
 | `-initialTab map\|airports\|flights\|downloads\|settings` | opening tab |
 | `-hasAcknowledgedDisclaimer YES` | skip the first-run legal gate |
 | `-mapDemoSpan N` / `-mapDemoFollow` / `-mapDemoChart` / `-mapDemoPanel` | map framing, follow mode, chart kind, layers panel |
+| `-mapDemoCenter "44.5,-105.6"` | frame the map somewhere other than the default (chart work happens where the charts are) |
 | `-mapDemoRadar` / `-mapDemoRadarSource internet\|adsb` | radar layer + source |
 | `-mapDemoAdvisories` / `-mapDemoAltitudeFilter N` / `-mapDemoAero` | advisory + aeronautical layers |
 | `-mapDemoSkipLocation YES` | skip the location prompt, which otherwise sits modally over the map |
@@ -66,6 +67,7 @@ touch GRDB or providers directly.
 ### Services (`Services/`) — the app's data layer
 - `AeroDatabase.swift` (~450 ln, largest service) — GRDB read-only wrapper over per-cycle `aero.sqlite`. FTS5 search (`SearchResult`), `AirportDetail`, map queries (`MapWaypoint`, `AirwayLine`), airspace R*Tree lookups. Conforms to `WaypointResolving` for the route parser.
 - `ChartStore.swift` — discovers downloaded MBTiles chart sets (`ChartSet`) and offline basemaps (`basemap_*` prefix); per-tree byte counts
+- `ChartCoverage.swift` — `ChartCoverage` (where a tile set actually draws chart, as a per-column top/bottom mask in normalized Web Mercator) + `ChartCoverageDetector`, which finds an FAA sheet's map area inside its collar by growing a colour-dense region out of the tiles at ~z8 and tracing its edges. Cached in a `.coverage` sidecar beside the `.mbtiles`; nil `body` means "no collar found, draw the whole file"
 - `PlateStore.swift` — actor; downloads/caches terminal procedure PDFs
 - `DownloadCenter.swift` — `@MainActor @Observable` region-download orchestrator: manifest state, per-product phases, sha256 verify + install into `cycles/{cycle}/…`, refcounted region delete, old-cycle eviction; persists intent/facts in `downloads/state.json`; `chartsVersion` counter drives map/storage refresh
 - `DownloadService.swift` — background `URLSession` (`Me.FlightBag.downloads`): resume data, relaunch reattach via `taskDescription` = product id; AppDelegate in `FlightBagApp.swift` catches `handleEventsForBackgroundURLSession`
@@ -95,8 +97,8 @@ touch GRDB or providers directly.
 - `MapRuler.swift` — `TwoFingerHoldGestureRecognizer` (two fingers held ~0.35 s; loses to pinch if they move) + `RulerHUDView` (screen-space dashed line + distance/course readout via NavMath; zoom/rotate suspended while measuring)
 - `EFBMapView.swift` (~510 ln) — `UIViewRepresentable` wrapping `MKMapView`; `Coordinator` owns all delegate logic, annotations (airport/waypoint/ownship), overlay z-ordering, tap handling
 - `MapLayersState.swift` — `ChartKind` (VFR/IFR-low/IFR-high) + observable toggle state for all layers
-- `MBTilesOverlay.swift` — `MKTileOverlay` reading local MBTiles via GRDB
-- `StreamingChartOverlay.swift` — FAA tile streaming with over-zoom (uses `TileResampler.swift`)
+- `MBTilesOverlay.swift` — `MKTileOverlay` reading local MBTiles via GRDB, clipped to the chart's `ChartCoverage` body (+ `ChartTileMask`, which re-cuts the tiles that straddle the neatline)
+- `StreamingChartOverlay.swift` — FAA tile streaming with over-zoom (uses `TileResampler.swift`); sits *under* the downloaded sets to fill what they don't cover, and skips tiles a download paints in full
 - `MapAdvisories.swift` — `AdvisoryCategory`, `AdvisoryPolygon`, `AdvisoryOverlayBuilder` (advisory → MKOverlay, altitude filtering)
 - `MapAeronautical.swift` — waypoint/airway/airspace rendering: annotations, polylines, airspace category colors
 - `MapTraffic.swift` — `TrafficAnnotation` + `TrafficAnnotationView` (track-rotated chevron, on-ground square, callsign/relative-altitude data block)
@@ -111,7 +113,7 @@ touch GRDB or providers directly.
 
 **Airports** — `AirportsHomeView` (search) → `AirportDetailView` → `WeatherSection` (raw/decoded toggle backed by `WeatherDecoding.swift` — METAR from parsed fields, TAF tokenized group-by-group), `PlatesSection`, `PlateViewerView` (PDF)
 
-**Downloads** — `DownloadsHomeView.swift` (region rows, storage split, `FreshnessBadge`, `productFreshness` honoring 56-day IFR expirations) → `RegionListView.swift` (manifest-driven state picker) → `RegionDetailView.swift` (chart-type toggles, per-product progress/pause/resume, refcount-aware delete)
+**Downloads** — `DownloadsHomeView.swift` (region rows, storage split, `FreshnessBadge`, `productFreshness` honoring 56-day IFR expirations; owns `DownloadsRoute`, the one route type for the whole stack) → `RegionListView.swift` (manifest-driven state picker: row tap opens the detail, the row's download button takes the whole region, "Select" multi-selects) → `RegionDetailView.swift` (chart-type toggles, per-product progress/pause/resume, refcount-aware delete)
 
 **Settings** — `SettingsHomeView.swift` (thin)
 

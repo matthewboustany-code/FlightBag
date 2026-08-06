@@ -9,15 +9,6 @@ struct RegionDetailView: View {
     @State private var selectedKinds: Set<DownloadProduct.ContentKind> = []
     @State private var confirmingDelete = false
 
-    /// Kinds offered per region, in display order.
-    private static let offeredKinds: [(DownloadProduct.ContentKind, String)] = [
-        (.vfrSectional, "VFR Sectionals"),
-        (.ifrEnrouteLow, "IFR Enroute Low"),
-        (.ifrEnrouteHigh, "IFR Enroute High"),
-        (.plates, "Terminal Procedures"),
-        (.basemap, "Offline Basemap"),
-    ]
-
     var body: some View {
         let center = environment.downloadCenter
         let record = center.records.first { $0.regionId == regionId }
@@ -61,12 +52,12 @@ struct RegionDetailView: View {
 
     private func kindSelectionSection(record: DownloadCenter.RegionDownloadRecord?) -> some View {
         Section {
-            ForEach(Self.offeredKinds, id: \.0) { kind, title in
+            ForEach(DownloadProduct.ContentKind.offeredPerRegion, id: \.self) { kind in
                 let products = environment.downloadCenter.products(regionId: regionId, kinds: [kind])
                 let size = products.reduce(Int64(0)) { $0 + $1.sizeBytes }
                 Toggle(isOn: binding(for: kind)) {
                     HStack {
-                        Text(title)
+                        Text(kind.displayName)
                         Spacer()
                         Text(products.isEmpty
                             ? "Not yet published"

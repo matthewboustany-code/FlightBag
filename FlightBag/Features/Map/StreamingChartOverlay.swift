@@ -12,9 +12,18 @@ final class StreamingChartOverlay: MKTileOverlay {
     private let nativeMaxZ: Int
     /// Kept so the map can credit the source — several licences require it.
     let source: ChartSource
+    /// What downloaded charts already paint. This layer sits underneath them
+    /// to fill the gaps, so fetching a tile one of them covers completely
+    /// would spend a pilot's cellular data redrawing what is on the device.
+    private let alreadyOffline: [ChartCoverage]
 
-    init(source: ChartSource, streaming: ChartSource.Streaming) {
+    init(
+        source: ChartSource,
+        streaming: ChartSource.Streaming,
+        alreadyOffline: [ChartCoverage] = []
+    ) {
         self.source = source
+        self.alreadyOffline = alreadyOffline
         nativeMaxZ = streaming.zoomRange.upperBound
         super.init(urlTemplate: streaming.urlTemplate)
         canReplaceMapContent = false
@@ -28,17 +37,23 @@ final class StreamingChartOverlay: MKTileOverlay {
     convenience init?(
         kind: ChartKind,
         regionIds: Set<String> = [],
-        manifestSources: [ChartSource] = []
+        manifestSources: [ChartSource] = [],
+        alreadyOffline: [ChartCoverage] = []
     ) {
         guard let source = ChartSource.streamingSource(
             for: kind.contentKind,
             regionIds: regionIds,
             manifestSources: manifestSources
         ), let streaming = source.streaming else { return nil }
-        self.init(source: source, streaming: streaming)
+        self.init(source: source, streaming: streaming, alreadyOffline: alreadyOffline)
     }
 
     nonisolated override func loadTile(at path: MKTileOverlayPath, result: @escaping @Sendable (Data?, (any Error)?) -> Void) {
+        let tile = ChartCoverage.MercatorRect.tile(path)
+        guard !alreadyOffline.contains(where: { $0.fullyPaints(tile) }) else {
+            result(nil, nil)
+            return
+        }
         guard path.z > nativeMaxZ else {
             super.loadTile(at: path, result: result)
             return

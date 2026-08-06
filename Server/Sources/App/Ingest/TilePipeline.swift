@@ -12,7 +12,9 @@ import FBModels
 ///   3. `gdalwarp -t_srs EPSG:3857`
 ///   4. `gdal_translate -of MBTILES -co TILE_FORMAT=PNG8` + `gdaladdo` overviews
 ///
-/// Chart collars are left visible in v0; cutline shapefiles strip them later.
+/// Chart collars are left in: the app finds each sheet's map area from the
+/// tiles themselves (`ChartCoverage`) and clips at render time, which also
+/// fixes charts already downloaded and MBTiles sideloaded from elsewhere.
 /// GDAL runs as an external process (Docker image in production, any local
 /// install during development via --gdal-bin).
 struct TilePipeline {

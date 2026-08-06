@@ -77,6 +77,27 @@ public struct DownloadProduct: Codable, Sendable, Hashable, Identifiable {
         case ifrEnrouteHigh
         case basemap
         case terrain
+
+        /// Kinds a region download offers, in display order. `aeroDatabase`
+        /// is not among them — it ships with the app's cycle rather than per
+        /// region — and `terrain` is not published yet.
+        public static let offeredPerRegion: [ContentKind] = [
+            .vfrSectional, .ifrEnrouteLow, .ifrEnrouteHigh, .plates, .basemap,
+        ]
+
+        /// What to call this in the download UI. Lives on the model so the
+        /// several screens offering the same kinds cannot drift apart.
+        public var displayName: String {
+            switch self {
+            case .aeroDatabase: "Airport & Navigation Database"
+            case .plates: "Terminal Procedures"
+            case .vfrSectional: "VFR Sectionals"
+            case .ifrEnrouteLow: "IFR Enroute Low"
+            case .ifrEnrouteHigh: "IFR Enroute High"
+            case .basemap: "Offline Basemap"
+            case .terrain: "Terrain"
+            }
+        }
     }
 
     public init(

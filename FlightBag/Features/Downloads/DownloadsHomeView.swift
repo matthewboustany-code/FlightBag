@@ -1,6 +1,19 @@
 import SwiftUI
 import FBModels
 
+/// A screen in the Downloads stack.
+///
+/// One route type for the whole stack, deliberately: the region list used to
+/// push a bare `String` and declare its own `navigationDestination(for:)`
+/// while the root declared another for the same type. Two destinations for one
+/// type in a single stack is undefined — SwiftUI keeps only one — and picking a
+/// region landed on the wrong screen, with Back returning to the region list
+/// instead of the region.
+enum DownloadsRoute: Hashable {
+    case regionList
+    case region(String)
+}
+
 /// Offline data status: installed database cycle, chart regions, plate
 /// storage, freshness.
 struct DownloadsHomeView: View {
@@ -37,8 +50,11 @@ struct DownloadsHomeView: View {
                 }
             }
             .navigationTitle("Downloads")
-            .navigationDestination(for: String.self) { regionId in
-                RegionDetailView(regionId: regionId)
+            .navigationDestination(for: DownloadsRoute.self) { route in
+                switch route {
+                case .regionList: RegionListView()
+                case .region(let regionId): RegionDetailView(regionId: regionId)
+                }
             }
             .task {
                 if UserDefaults.standard.bool(forKey: "downloadsDemoSeed") {
@@ -46,7 +62,7 @@ struct DownloadsHomeView: View {
                     // `-downloadsDemoOpen US-TX` deep-links into a region's
                     // detail screen for screenshot automation.
                     if let regionId = UserDefaults.standard.string(forKey: "downloadsDemoOpen") {
-                        path.append(regionId)
+                        path.append(DownloadsRoute.region(regionId))
                     }
                 } else {
                     await environment.downloadCenter.refreshManifest()
@@ -84,13 +100,11 @@ struct DownloadsHomeView: View {
                     .foregroundStyle(.secondary)
             }
             ForEach(center.records, id: \.regionId) { record in
-                NavigationLink(value: record.regionId) {
+                NavigationLink(value: DownloadsRoute.region(record.regionId)) {
                     RegionRow(record: record)
                 }
             }
-            NavigationLink {
-                RegionListView()
-            } label: {
+            NavigationLink(value: DownloadsRoute.regionList) {
                 Label("Add Region", systemImage: "plus.circle")
                     .foregroundStyle(Color.accentColor)
             }

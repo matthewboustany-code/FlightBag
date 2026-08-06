@@ -4,15 +4,18 @@ import FBModels
 /// Pick a region to download — rendered entirely from the manifest, so new
 /// coverage (states today, countries later) needs no app change.
 ///
-/// Tapping a region opens its detail view for per-kind control. "Select" turns
-/// the list into a multi-select: with 70+ regions published, going into each
-/// one to tick the same boxes is the slow path.
+/// Three ways in, because they answer different questions: the download button
+/// on a row takes the whole region as published, tapping the row opens its
+/// detail view for per-kind control, and "Select" turns the list into a
+/// multi-select — with 70+ regions published, going into each one to tick the
+/// same boxes is the slow path.
 struct RegionListView: View {
     @Environment(AppEnvironment.self) private var environment
     @State private var searchText = ""
     @State private var isSelecting = false
     @State private var selectedRegions: Set<String> = []
     @State private var choosingKinds = false
+    @State private var confirmingWholeRegion: Region?
 
     var body: some View {
         let center = environment.downloadCenter
@@ -47,20 +50,20 @@ struct RegionListView: View {
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("region.select.\(region.id)")
                 } else {
-                    NavigationLink(value: region.id) {
-                        HStack {
-                            Text(region.name)
-                            Spacer()
-                            statusLabel(for: region.id)
+                    HStack {
+                        NavigationLink(value: DownloadsRoute.region(region.id)) {
+                            HStack {
+                                Text(region.name)
+                                Spacer()
+                                statusLabel(for: region.id)
+                            }
                         }
+                        wholeRegionButton(for: region)
                     }
                 }
             }
         }
         .navigationTitle("Add Region")
-        .navigationDestination(for: String.self) { regionId in
-            RegionDetailView(regionId: regionId)
-        }
         .searchable(text: $searchText, prompt: "Search regions")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -94,9 +97,71 @@ struct RegionListView: View {
                 selectedRegions.removeAll()
             }
         }
+        .confirmationDialog(
+            "Download this whole region?",
+            isPresented: Binding(
+                get: { confirmingWholeRegion != nil },
+                set: { if !$0 { confirmingWholeRegion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: confirmingWholeRegion
+        ) { region in
+            Button("Download \(ByteCountFormatter.string(fromByteCount: remainingBytes(for: region.id), countStyle: .file))") {
+                environment.downloadCenter.startDownload(
+                    regionId: region.id,
+                    kinds: publishedKinds(for: region.id)
+                )
+            }
+            .accessibilityIdentifier("regions.wholeRegion.confirm")
+        } message: { region in
+            Text("Keeps everything published for \(region.name) offline: \(kindSummary(for: region.id)).")
+        }
         .task {
             await environment.downloadCenter.refreshManifest()
         }
+    }
+
+    /// One tap for "all of it", so taking a whole state does not mean opening
+    /// it and ticking every box. Absent once everything published is already
+    /// installed — the row's checkmark says so.
+    @ViewBuilder
+    private func wholeRegionButton(for region: Region) -> some View {
+        if remainingBytes(for: region.id) > 0 {
+            Button {
+                confirmingWholeRegion = region
+            } label: {
+                Image(systemName: "arrow.down.circle")
+                    .imageScale(.large)
+            }
+            // .borderless keeps the tap to the icon; a plain button in a row
+            // with a NavigationLink otherwise swallows the whole row.
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Download all of \(region.name)")
+            .accessibilityIdentifier("region.downloadAll.\(region.id)")
+        }
+    }
+
+    /// Every content kind the manifest publishes for a region.
+    private func publishedKinds(for regionId: String) -> Set<DownloadProduct.ContentKind> {
+        Set(environment.downloadCenter
+            .products(regionId: regionId, kinds: Set(DownloadProduct.ContentKind.allCases))
+            .map(\.contentKind))
+    }
+
+    /// Bytes still to fetch for the whole region — what isn't already on the
+    /// device, so a shared sectional isn't counted against a second state.
+    private func remainingBytes(for regionId: String) -> Int64 {
+        let center = environment.downloadCenter
+        return center.products(regionId: regionId, kinds: Set(DownloadProduct.ContentKind.allCases))
+            .filter { !center.isInstalled($0.id) }
+            .reduce(0) { $0 + $1.sizeBytes }
+    }
+
+    private func kindSummary(for regionId: String) -> String {
+        let names = publishedKinds(for: regionId)
+            .sorted { $0.rawValue < $1.rawValue }
+            .map(\.displayName)
+        return names.isEmpty ? "nothing yet" : names.formatted(.list(type: .and))
     }
 
     private var selectionBar: some View {
@@ -169,23 +234,15 @@ private struct BulkDownloadSheet: View {
 
     @State private var selectedKinds: Set<DownloadProduct.ContentKind> = [.plates]
 
-    private static let offeredKinds: [(DownloadProduct.ContentKind, String)] = [
-        (.vfrSectional, "VFR Sectionals"),
-        (.ifrEnrouteLow, "IFR Enroute Low"),
-        (.ifrEnrouteHigh, "IFR Enroute High"),
-        (.plates, "Terminal Procedures"),
-        (.basemap, "Offline Basemap"),
-    ]
-
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    ForEach(Self.offeredKinds, id: \.0) { kind, title in
+                    ForEach(DownloadProduct.ContentKind.offeredPerRegion, id: \.self) { kind in
                         let size = totalSize(for: [kind])
                         Toggle(isOn: binding(for: kind)) {
                             HStack {
-                                Text(title)
+                                Text(kind.displayName)
                                 Spacer()
                                 Text(size == 0
                                      ? "Not published"
