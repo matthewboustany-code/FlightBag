@@ -49,7 +49,7 @@ Launch args seed deterministic state for `xcrun simctl` screenshots:
 For live ADS-B behavior, run `swift run gdl90sim` (in `Packages/FlightBagCore`)
 alongside the app. Note the simulator persists `adsbEnabled`; if the receiver
 reads "Off", run
-`xcrun simctl spawn booted defaults write Me.FlightBag adsbEnabled -bool YES`
+`xcrun simctl spawn booted defaults write com.mbandhb.flightbag adsbEnabled -bool YES`
 (editing the plist directly is clobbered by `cfprefsd`).
 
 ## App target (`FlightBag/`)
@@ -70,7 +70,7 @@ touch GRDB or providers directly.
 - `ChartCoverage.swift` — `ChartCoverage` (where a tile set actually draws chart, as a per-column top/bottom mask in normalized Web Mercator) + `ChartCoverageDetector`, which finds an FAA sheet's map area inside its collar by growing a colour-dense region out of the tiles at ~z8 and tracing its edges. Cached in a `.coverage` sidecar beside the `.mbtiles`; nil `body` means "no collar found, draw the whole file"
 - `PlateStore.swift` — actor; downloads/caches terminal procedure PDFs
 - `DownloadCenter.swift` — `@MainActor @Observable` region-download orchestrator: manifest state, per-product phases, sha256 verify + install into `cycles/{cycle}/…`, refcounted region delete, old-cycle eviction; persists intent/facts in `downloads/state.json`; `chartsVersion` counter drives map/storage refresh
-- `DownloadService.swift` — background `URLSession` (`Me.FlightBag.downloads`): resume data, relaunch reattach via `taskDescription` = product id; AppDelegate in `FlightBagApp.swift` catches `handleEventsForBackgroundURLSession`
+- `DownloadService.swift` — background `URLSession` (`com.mbandhb.flightbag.downloads`): resume data, relaunch reattach via `taskDescription` = product id; AppDelegate in `FlightBagApp.swift` catches `handleEventsForBackgroundURLSession`
 - `ManifestClient.swift` — `ServerConfig` (UserDefaults `serverBaseURL`) + `/v1/manifest` fetch with offline JSON cache
 - `ZipExtractor.swift` — minimal zip reader (stored/deflate, no zip64) for per-state plate bundles
 - `PlateGeoreference.swift` — parses the geospatial viewport FAA embeds in IAP PDFs (`/VP` → BBox + GPTS/LPTS; registration points sit on an inset 0.1–0.9 ring, so corners come from an affine fit) + `PlateRasterizer` (BBox region → ≤2048px CGImage)

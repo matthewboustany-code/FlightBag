@@ -36,7 +36,7 @@ final class DownloadService: NSObject, URLSessionDownloadDelegate, @unchecked Se
     private var tasksByProduct: [String: URLSessionDownloadTask] = [:]
     private var lastProgressReport: [String: Date] = [:]
 
-    init(identifier: String = "Me.FlightBag.downloads", events: Events) {
+    init(identifier: String = "com.mbandhb.flightbag.downloads", events: Events) {
         self.events = events
         let support = (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
             ?? FileManager.default.temporaryDirectory
