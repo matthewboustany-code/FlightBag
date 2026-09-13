@@ -94,7 +94,9 @@ final class GDL90Receiver {
         guard listener != nil else { return }
         lastMessageAt = Date()
         messagesThisSecond += events.count
-        state = .receiving
+        // @Observable notifies on every assignment, equal or not; assigning
+        // per datagram re-rendered Settings and the status strip at that rate.
+        if state != .receiving { state = .receiving }
         for event in events {
             switch event {
             case .message(.heartbeat(let heartbeat)):
