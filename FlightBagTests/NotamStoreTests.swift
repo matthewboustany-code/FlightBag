@@ -183,7 +183,9 @@ import FBFISB
         await store.seedForTesting(
             "KAUS",
             notams: [Notam(id: "01/005", location: ICAOIdentifier("KAUS"), text: "TWY A CLSD")],
-            source: .server
+            source: .server,
+            // Older than the freshness window, so the store does ask.
+            fetchedAt: Date().addingTimeInterval(-NotamStore.freshFor - 60)
         )
         let previous = UserDefaults.standard.string(forKey: ServerConfig.defaultsKey)
         // Port 1 refuses connections immediately.
@@ -199,6 +201,28 @@ import FBFISB
         // "nothing is wrong at KAUS".
         #expect(result.notams.count == 1)
         #expect(result.isStale)
+    }
+
+    @Test func recentServerAnswerIsServedWithoutARoundTrip() async throws {
+        let store = await emptyStore()
+        await store.seedForTesting(
+            "KAUS",
+            notams: [Notam(id: "01/005", location: ICAOIdentifier("KAUS"), text: "TWY A CLSD")],
+            source: .server,
+            fetchedAt: Date().addingTimeInterval(-60)
+        )
+        let previous = UserDefaults.standard.string(forKey: ServerConfig.defaultsKey)
+        // Unreachable: if the store asked, the answer would be `.unreachable`.
+        UserDefaults.standard.set("http://127.0.0.1:1", forKey: ServerConfig.defaultsKey)
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: ServerConfig.defaultsKey) }
+            else { UserDefaults.standard.removeObject(forKey: ServerConfig.defaultsKey) }
+        }
+
+        let result = await store.notams(for: ICAOIdentifier("KAUS"))
+        #expect(result.availability == .available)
+        #expect(!result.isStale)
+        #expect(result.notams.count == 1)
     }
 
     @Test func briefingKeepsRouteOrderAndCollapsesRepeats() async throws {

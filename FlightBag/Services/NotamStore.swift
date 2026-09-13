@@ -56,6 +56,8 @@ actor NotamStore {
         var availability: Availability
     }
 
+    static let freshFor: TimeInterval = 300
+
     private var cache: [String: StationNotams] = [:]
     private let cacheURL: URL
     private let session: URLSession
@@ -77,6 +79,15 @@ actor NotamStore {
 
         guard let baseURL = ServerConfig.baseURL else {
             return result(for: key, availability: .noServerConfigured)
+        }
+
+        // The map refreshes route NOTAMs on every layer toggle, and the server
+        // caches for 15 minutes anyway: a server answer under five minutes old
+        // is served without the round trip.
+        if let entry = cache[key], entry.source == .server,
+           Date().timeIntervalSince(entry.fetchedAt) < Self.freshFor {
+            return Result(notams: sorted(entry.notams), fetchedAt: entry.fetchedAt,
+                          source: .server, isStale: false, availability: .available)
         }
 
         do {
