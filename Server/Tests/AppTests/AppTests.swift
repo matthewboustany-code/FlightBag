@@ -74,3 +74,36 @@ import FBModels
         #expect(await cache.cached("KDAL") == nil)
     }
 }
+
+@Suite struct StationCacheBoundsTests {
+    @Test func staysWithinCapacity() async {
+        let cache = StationCache<Int>(ttl: 900, capacity: 3)
+        let start = Date()
+        for (i, station) in ["KAUS", "KDAL", "KHOU", "KSAT", "KELP"].enumerated() {
+            await cache.store(station, i, now: start.addingTimeInterval(Double(i)))
+        }
+        #expect(await cache.count == 3)
+        // Oldest live entries went first.
+        #expect(await cache.cached("KAUS", now: start.addingTimeInterval(10)) == nil)
+        #expect(await cache.cached("KELP", now: start.addingTimeInterval(10)) == 4)
+    }
+
+    @Test func evictsExpiredBeforeLive() async {
+        let cache = StationCache<Int>(ttl: 100, capacity: 2)
+        let start = Date()
+        await cache.store("KAUS", 1, now: start)                          // expires at +100
+        await cache.store("KDAL", 2, now: start.addingTimeInterval(90))   // live until +190
+        await cache.store("KHOU", 3, now: start.addingTimeInterval(150))
+        // KAUS was expired, so it went; KDAL (older than KHOU but live) stays.
+        #expect(await cache.cached("KDAL", now: start.addingTimeInterval(150)) == 2)
+        #expect(await cache.count == 2)
+    }
+
+    @Test func refreshingAStationDoesNotEvictAnother() async {
+        let cache = StationCache<Int>(ttl: 900, capacity: 2)
+        await cache.store("KAUS", 1)
+        await cache.store("KDAL", 2)
+        await cache.store("KAUS", 3)
+        #expect(await cache.cached("KDAL") == 2)
+    }
+}

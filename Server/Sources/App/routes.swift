@@ -104,54 +104,64 @@ struct AirportNotamsResponse: Content, Sendable {
 /// Per-station TTL cache for the weather proxy: METAR/TAF refresh hourly, so a
 /// short window collapses bursts of client requests into one upstream fetch
 /// (the "etiquette" the endpoint promises aviationweather.gov).
-actor WeatherCache {
-    private struct Entry {
-        let response: AirportWeatherResponse
-        let fetchedAt: Date
-    }
-
-    private var entries: [String: Entry] = [:]
-    private let ttl: TimeInterval
-
-    init(ttl: TimeInterval = 300) {
-        self.ttl = ttl
-    }
-
-    func cached(_ station: String, now: Date = Date()) -> AirportWeatherResponse? {
-        guard let entry = entries[station], now.timeIntervalSince(entry.fetchedAt) < ttl else { return nil }
-        return entry.response
-    }
-
-    func store(_ station: String, _ response: AirportWeatherResponse, now: Date = Date()) {
-        entries[station] = Entry(response: response, fetchedAt: now)
-    }
-}
+typealias WeatherCache = StationCache<AirportWeatherResponse>
 
 /// Per-station TTL cache for the NOTAM proxy. The TTL is far longer than the
 /// weather one: NOTAMs change on the order of hours, the upstream is a
 /// credentialed government API worth being frugal with, and a stale-by-minutes
 /// NOTAM is not a safety difference — the app stamps everything with its age
 /// regardless.
-actor NotamCache {
+typealias NotamCache = StationCache<AirportNotamsResponse>
+
+extension StationCache where Response == AirportWeatherResponse {
+    init(ttl: TimeInterval = 300) { self.init(ttl: ttl, capacity: 2_000) }
+}
+
+extension StationCache where Response == AirportNotamsResponse {
+    init(ttl: TimeInterval = 900) { self.init(ttl: ttl, capacity: 2_000) }
+}
+
+/// A TTL cache keyed by station, bounded in size. Without a cap every station
+/// anyone ever asked about stayed resident for the life of the process.
+actor StationCache<Response: Sendable> {
     private struct Entry {
-        let response: AirportNotamsResponse
+        let response: Response
         let fetchedAt: Date
     }
 
     private var entries: [String: Entry] = [:]
     private let ttl: TimeInterval
+    private let capacity: Int
 
-    init(ttl: TimeInterval = 900) {
+    init(ttl: TimeInterval, capacity: Int) {
         self.ttl = ttl
+        self.capacity = max(1, capacity)
     }
 
-    func cached(_ station: String, now: Date = Date()) -> AirportNotamsResponse? {
+    var count: Int { entries.count }
+
+    func cached(_ station: String, now: Date = Date()) -> Response? {
         guard let entry = entries[station], now.timeIntervalSince(entry.fetchedAt) < ttl else { return nil }
         return entry.response
     }
 
-    func store(_ station: String, _ response: AirportNotamsResponse, now: Date = Date()) {
+    /// Stores a response, making room first: expired entries go before any
+    /// live one, and only then the oldest live entries.
+    func store(_ station: String, _ response: Response, now: Date = Date()) {
+        if entries[station] == nil, entries.count >= capacity {
+            sweepExpired(now: now)
+            if entries.count >= capacity {
+                let overflow = entries.count - capacity + 1
+                for key in entries.sorted(by: { $0.value.fetchedAt < $1.value.fetchedAt }).prefix(overflow).map(\.key) {
+                    entries[key] = nil
+                }
+            }
+        }
         entries[station] = Entry(response: response, fetchedAt: now)
+    }
+
+    func sweepExpired(now: Date = Date()) {
+        entries = entries.filter { now.timeIntervalSince($0.value.fetchedAt) < ttl }
     }
 }
 
