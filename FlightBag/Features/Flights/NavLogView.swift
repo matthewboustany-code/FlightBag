@@ -92,13 +92,11 @@ struct NavLogView: View {
         let plannedDeparture = FlightPlanCodec.decode(flight.flightPlanData)?.departureTime
         let forecastHours = WindsAloftForecast.period(forDeparture: plannedDeparture)
         var located: [(Coordinate, WindsAloftStation)] = []
-        if let db = environment.aeroDatabase,
-           let stations = try? await AviationWeatherGovProvider().windsAloft(forecastHours: forecastHours) {
-            for station in stations {
-                if let waypoint = try? await db.resolveWaypoint(identifier: station.identifier) {
-                    located.append((waypoint.coordinate, station))
-                }
+        if let db = environment.aeroDatabase {
+            located = await environment.windsAloftStore.stations(forecastHours: forecastHours) { identifier in
+                try? await db.resolveWaypoint(identifier: identifier)?.coordinate
             }
+            .map { ($0.coordinate, $0.station) }
         }
         let altitude = Self.cruiseAltitudeFeet(from: flight.flightPlanData) ?? 6000
         windsApplied = !located.isEmpty

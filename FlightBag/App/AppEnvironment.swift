@@ -103,6 +103,7 @@ final class AppEnvironment {
     let aeroDatabase: AeroDatabase?
     let weatherStore: WeatherStore
     let notamStore: NotamStore
+    let windsAloftStore = WindsAloftStore()
     let plateStore: PlateStore
     let chartStore = ChartStore()
     let downloadCenter = DownloadCenter()
