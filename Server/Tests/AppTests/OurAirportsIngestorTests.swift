@@ -242,8 +242,8 @@ import FBModels
     /// Bumping this is a deliberate act: the app gates features on the
     /// installed database's version, so a change here needs a matching guard
     /// on the reading side.
-    @Test func schemaVersionIsFive() {
-        #expect(AeroDatabaseBuilder.schemaVersion == 5)
+    @Test func schemaVersionIsSix() {
+        #expect(AeroDatabaseBuilder.schemaVersion == 6)
     }
 
     /// The bug `kind` was added for: OurAirports writes `large_airport` into

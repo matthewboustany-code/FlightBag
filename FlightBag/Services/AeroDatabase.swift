@@ -218,10 +218,19 @@ final class AeroDatabase: Sendable {
         limit: Int
     ) async throws -> [MapAirport] {
         let landingFacility = self.landingFacilityPredicate
-        return try await dbPool.read { db in
-            try Row.fetchAll(
-                db,
-                sql: """
+        // Schema 6 stores the tier; older databases compute it per candidate.
+        let tierSource = schemaVersion >= 6
+            ? """
+                SELECT id, icao_id, name, lat, lon, COALESCE(tier, 2) AS tier
+                FROM (
+                    SELECT a.id, a.icao_id, a.name, a.lat, a.lon, a.tier
+                    FROM airport_rtree r
+                    JOIN airport a ON a.rowid = r.id
+                    WHERE r.min_lat >= ? AND r.max_lat <= ? AND r.min_lon >= ? AND r.max_lon <= ?
+                      AND \(landingFacility)
+                )
+                """
+            : """
                 SELECT id, icao_id, name, lat, lon,
                     CASE
                         WHEN twr AND longest >= 6000 THEN 0
@@ -237,6 +246,12 @@ final class AeroDatabase: Sendable {
                     WHERE r.min_lat >= ? AND r.max_lat <= ? AND r.min_lon >= ? AND r.max_lon <= ?
                       AND \(landingFacility)
                 )
+                """
+        return try await dbPool.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                SELECT * FROM (\(tierSource))
                 WHERE tier <= ?
                 ORDER BY tier, (lat - ?) * (lat - ?) + (lon - ?) * (lon - ?)
                 LIMIT ?
