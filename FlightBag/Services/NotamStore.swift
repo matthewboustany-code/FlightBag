@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import FBModels
 import FBFISB
@@ -34,6 +35,17 @@ actor NotamStore {
         var notams: [Notam]
         var fetchedAt: Date
         var source: Source?
+        /// Ids of the NOTAMs the server supplied. Provenance is per NOTAM, not
+        /// per station: one uplink merge must not demote every server copy
+        /// already here to "replaceable". Nil in caches written before this
+        /// field existed — see `serverIdsResolved`.
+        var serverIds: Set<String>?
+
+        /// `serverIds`, reading an older cache's station-level `source` as
+        /// applying to everything it held.
+        var serverIdsResolved: Set<String> {
+            serverIds ?? (source == .server ? Set(notams.map(\.id)) : [])
+        }
     }
 
     struct Result: Sendable {
@@ -80,7 +92,12 @@ actor NotamStore {
             guard decoded.configured else {
                 return result(for: key, availability: .serverMissingCredentials)
             }
-            let fresh = StationNotams(notams: decoded.notams, fetchedAt: Date(), source: .server)
+            let fresh = StationNotams(
+                notams: decoded.notams,
+                fetchedAt: Date(),
+                source: .server,
+                serverIds: Set(decoded.notams.map(\.id))
+            )
             cache[key] = fresh
             persist()
             return Result(
@@ -111,9 +128,11 @@ actor NotamStore {
             var entry = cache[key] ?? StationNotams(notams: [], fetchedAt: receivedAt)
             // The uplink rebroadcasts on a loop; never age-regress an entry.
             guard receivedAt >= entry.fetchedAt else { continue }
+            let serverIds = entry.serverIdsResolved
+            entry.serverIds = serverIds
             if let index = entry.notams.firstIndex(where: { $0.id == notam.id }) {
                 // Keep the richer server copy if we already have one.
-                if entry.source == .fisb { entry.notams[index] = notam }
+                if !serverIds.contains(notam.id) { entry.notams[index] = notam }
             } else {
                 entry.notams.append(notam)
             }
@@ -236,7 +255,12 @@ actor NotamStore {
     }
 
     func seedForTesting(_ station: String, notams: [Notam], source: Source, fetchedAt: Date = Date()) {
-        cache[station.uppercased()] = StationNotams(notams: notams, fetchedAt: fetchedAt, source: source)
+        cache[station.uppercased()] = StationNotams(
+            notams: notams,
+            fetchedAt: fetchedAt,
+            source: source,
+            serverIds: source == .server ? Set(notams.map(\.id)) : []
+        )
         persist()
     }
     #endif
@@ -314,8 +338,12 @@ extension FISBTextReport {
             tokens.removeFirst()
         } else {
             // No parseable number: key on the text so repeated uplinks of the
-            // same notice collapse instead of piling up.
-            number = "\(kind.rawValue)-\(abs(text.hashValue))"
+            // same notice collapse instead of piling up. A digest, not
+            // `hashValue` — Swift seeds that per process, so the same notice
+            // got a new id every launch and the disk cache never collapsed.
+            let digest = SHA256.hash(data: Data((kind.rawValue + text).utf8))
+            let hex = digest.map { String(format: "%02x", $0) }.joined()
+            number = "\(kind.rawValue)-\(hex.prefix(12))"
         }
 
         let body = tokens.joined(separator: " ")
