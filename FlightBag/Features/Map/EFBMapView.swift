@@ -41,10 +41,7 @@ struct EFBMapView: UIViewRepresentable {
             latitude: demoSpan > 10 ? 38.5 : 30.19,
             longitude: demoSpan > 10 ? -96 : -97.67
         )
-        map.setRegion(
-            MKCoordinateRegion(center: center, span: MKCoordinateSpan(latitudeDelta: span, longitudeDelta: span)),
-            animated: false
-        )
+        map.setRegion(MKCoordinateRegion(center: center, span: Self.demoSpan(span)), animated: false)
         map.register(AirportAnnotationView.self, forAnnotationViewWithReuseIdentifier: AirportAnnotationView.reuseId)
         map.register(OwnshipAnnotationView.self, forAnnotationViewWithReuseIdentifier: OwnshipAnnotationView.reuseId)
         map.register(WaypointAnnotationView.self, forAnnotationViewWithReuseIdentifier: WaypointAnnotationView.reuseId)
@@ -89,6 +86,12 @@ struct EFBMapView: UIViewRepresentable {
 
     /// `-mapDemoCenter "44.5,-105.6"` → a coordinate, or nil when absent or
     /// unparseable (in which case the default framing stands).
+    /// A span past 180° latitude makes an invalid region, which `setRegion`
+    /// throws on (`-mapDemoSpan 200` crashed). Clamp to what MapKit accepts.
+    static func demoSpan(_ degrees: Double) -> MKCoordinateSpan {
+        MKCoordinateSpan(latitudeDelta: min(degrees, 170), longitudeDelta: min(degrees, 350))
+    }
+
     private static func demoCenter() -> CLLocationCoordinate2D? {
         guard let raw = UserDefaults.standard.string(forKey: "mapDemoCenter") else { return nil }
         let parts = raw.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
