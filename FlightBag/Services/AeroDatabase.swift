@@ -24,19 +24,15 @@ final class AeroDatabase: Sendable {
             .appendingPathComponent("FlightBag/cycles", isDirectory: true)
         try fileManager.createDirectory(at: cyclesRoot, withIntermediateDirectories: true)
 
-        // Newest cycle directory containing an aero.sqlite wins.
-        let installed = ((try? fileManager.contentsOfDirectory(atPath: cyclesRoot.path)) ?? [])
-            .filter { fileManager.fileExists(atPath: cyclesRoot.appendingPathComponent("\($0)/aero.sqlite").path) }
-            .sorted()
-
         let seed = Bundle.main.url(forResource: "aero", withExtension: "sqlite")
         let seedDB = try seed.map { try AeroDatabase(path: $0.path) }
 
-        if let newest = installed.last {
-            let installedDB = try AeroDatabase(path: cyclesRoot.appendingPathComponent("\(newest)/aero.sqlite").path)
-            let seedIsBetter = seedDB.map {
-                ($0.cycle?.id ?? "") > newest
-                    || (($0.cycle?.id ?? "") == newest && $0.schemaVersion > installedDB.schemaVersion)
+        if let newest = newestInstalledCycle(in: cyclesRoot) {
+            let installedDB = try AeroDatabase(path: cyclesRoot.appendingPathComponent("\(newest.id)/aero.sqlite").path)
+            let seedIsBetter = seedDB.map { seed in
+                guard let seedCycle = seed.cycle else { return false }
+                return seedCycle > newest
+                    || (seedCycle == newest && seed.schemaVersion > installedDB.schemaVersion)
             } ?? false
             if !seedIsBetter {
                 return installedDB
@@ -57,6 +53,17 @@ final class AeroDatabase: Sendable {
         var mutableTarget = targetDB
         try? mutableTarget.setResourceValues(values)
         return try AeroDatabase(path: targetDB.path)
+    }
+
+    /// The newest cycle directory holding an `aero.sqlite`, compared as
+    /// cycles. A string sort let a `seed` directory (written when the bundled
+    /// database has no cycle) outrank every real cycle forever.
+    static func newestInstalledCycle(in cyclesRoot: URL) -> DataCycle? {
+        let fileManager = FileManager.default
+        return ((try? fileManager.contentsOfDirectory(atPath: cyclesRoot.path)) ?? [])
+            .compactMap(DataCycle.init(id:))
+            .filter { fileManager.fileExists(atPath: cyclesRoot.appendingPathComponent("\($0.id)/aero.sqlite").path) }
+            .max()
     }
 
     init(path: String) throws {
