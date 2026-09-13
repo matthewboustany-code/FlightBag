@@ -11,7 +11,11 @@ import UniformTypeIdentifiers
 /// that is: an FAA sheet's collar is opaque paper, and unclipped it hides the
 /// neighbouring chart (and anything streamed) wherever two sheets overlap.
 final class MBTilesOverlay: MKTileOverlay {
-    private let dbQueue: DatabaseQueue
+    /// A pool, not a queue: MapKit asks for many tiles at once, and a single
+    /// connection answered them one at a time, so a downloaded sectional panned
+    /// slower than the streamed one. Read-only pools open fine on the
+    /// rollback-journal files MBTiles producers write; no WAL needed.
+    private let dbPool: DatabasePool
     /// Deepest zoom stored in the file; deeper requests are synthesized by
     /// upscaling these tiles (see TileResampler).
     private let nativeMaxZ: Int
@@ -20,10 +24,10 @@ final class MBTilesOverlay: MKTileOverlay {
     init?(fileURL: URL, coverage: ChartCoverage? = nil) {
         var config = Configuration()
         config.readonly = true
-        guard let queue = try? DatabaseQueue(path: fileURL.path, configuration: config) else {
+        guard let queue = try? DatabasePool(path: fileURL.path, configuration: config) else {
             return nil
         }
-        dbQueue = queue
+        dbPool = queue
         self.coverage = coverage
 
         var meta: [String: String] = [:]
@@ -86,7 +90,7 @@ final class MBTilesOverlay: MKTileOverlay {
     private nonisolated func fetchStored(at path: MKTileOverlayPath, result: @escaping @Sendable (Data?, Error?) -> Void) {
         // MBTiles stores rows in TMS scheme: y grows south-to-north.
         let tmsY = (1 << path.z) - 1 - path.y
-        dbQueue.asyncRead { dbResult in
+        dbPool.asyncRead { dbResult in
             var data: Data?
             if case .success(let db) = dbResult {
                 data = try? Data.fetchOne(

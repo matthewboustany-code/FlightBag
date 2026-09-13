@@ -8,7 +8,10 @@ import FBFlightPlan
 /// downloaded cycle updates land in the same directory layout and win by
 /// being newer.
 final class AeroDatabase: Sendable {
-    private let dbQueue: DatabaseQueue
+    /// Search, map annotations, the aeronautical layer, and route resolution
+    /// all read concurrently; a pool gives them separate connections instead
+    /// of queueing them behind one. (Read-only, so no WAL is required.)
+    private let dbPool: DatabasePool
     let cycle: DataCycle?
     /// Schema generation of this database; pre-airway builds report 1.
     let schemaVersion: Int
@@ -69,8 +72,8 @@ final class AeroDatabase: Sendable {
     init(path: String) throws {
         var config = Configuration()
         config.readonly = true
-        dbQueue = try DatabaseQueue(path: path, configuration: config)
-        (cycle, schemaVersion) = try dbQueue.read { db in
+        dbPool = try DatabasePool(path: path, configuration: config)
+        (cycle, schemaVersion) = try dbPool.read { db in
             let cycle = (try String.fetchOne(db, sql: "SELECT value FROM meta WHERE key = 'cycle'"))
                 .flatMap(DataCycle.init(id:))
             let schema = (try String.fetchOne(db, sql: "SELECT value FROM meta WHERE key = 'schema_version'"))
@@ -101,7 +104,7 @@ final class AeroDatabase: Sendable {
     /// app did not cover them.
     func coverageSummary() async throws -> (airports: Int, countries: Int) {
         let landingFacility = landingFacilityPredicate
-        return try await dbQueue.read { db in
+        return try await dbPool.read { db in
             let airports = try Int.fetchOne(
                 db,
                 sql: "SELECT COUNT(*) FROM airport a WHERE \(landingFacility)"
@@ -142,7 +145,7 @@ final class AeroDatabase: Sendable {
         let exact = trimmed.uppercased()
         let landingFacility = self.landingFacilityPredicate
 
-        return try await dbQueue.read { db in
+        return try await dbPool.read { db in
             try Row.fetchAll(
                 db,
                 sql: """
@@ -165,7 +168,7 @@ final class AeroDatabase: Sendable {
 
     func airportsNear(latitude: Double, longitude: Double, spanDegrees: Double = 1.0, limit: Int = 50) async throws -> [SearchResult] {
         let landingFacility = self.landingFacilityPredicate
-        return try await dbQueue.read { db in
+        return try await dbPool.read { db in
             try Row.fetchAll(
                 db,
                 sql: """
@@ -215,7 +218,7 @@ final class AeroDatabase: Sendable {
         limit: Int
     ) async throws -> [MapAirport] {
         let landingFacility = self.landingFacilityPredicate
-        return try await dbQueue.read { db in
+        return try await dbPool.read { db in
             try Row.fetchAll(
                 db,
                 sql: """
@@ -275,7 +278,7 @@ final class AeroDatabase: Sendable {
     /// query by both the FAA id and the ICAO id.
     func procedures(airportId: String, icaoId: String?) async throws -> [ProcedureSummary] {
         guard schemaVersion >= 3 else { return [] }
-        return try await dbQueue.read { db in
+        return try await dbPool.read { db in
             try Row.fetchAll(
                 db,
                 sql: "SELECT DISTINCT ident, kind FROM procedure WHERE airport_id IN (?, ?) ORDER BY kind, ident",
@@ -286,7 +289,7 @@ final class AeroDatabase: Sendable {
 
     func procedureLegs(airportId: String, icaoId: String?, ident: String) async throws -> [ProcedureLegRow] {
         guard schemaVersion >= 3 else { return [] }
-        return try await dbQueue.read { db in
+        return try await dbPool.read { db in
             try Row.fetchAll(
                 db,
                 sql: """
@@ -321,7 +324,7 @@ final class AeroDatabase: Sendable {
     }
 
     func airportDetail(id: String) async throws -> AirportDetail? {
-        try await dbQueue.read { db in
+        try await dbPool.read { db in
             guard let airportRow = try Row.fetchOne(db, sql: "SELECT rowid, * FROM airport WHERE id = ? OR icao_id = ?", arguments: [id, id]) else {
                 return nil
             }
@@ -429,7 +432,7 @@ extension AeroDatabase {
     }
 
     func navaidsIn(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double, limit: Int = 80) async throws -> [MapWaypoint] {
-        try await dbQueue.read { db in
+        try await dbPool.read { db in
             try Row.fetchAll(
                 db,
                 sql: """
@@ -445,7 +448,7 @@ extension AeroDatabase {
     }
 
     func fixesIn(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double, limit: Int = 150) async throws -> [MapWaypoint] {
-        try await dbQueue.read { db in
+        try await dbPool.read { db in
             try Row.fetchAll(
                 db,
                 sql: """
@@ -464,7 +467,7 @@ extension AeroDatabase {
     /// the polyline doesn't stop at the screen edge.
     func airwaysIn(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double, limit: Int = 60) async throws -> [AirwayLine] {
         guard schemaVersion >= 2 else { return [] }
-        return try await dbQueue.read { db in
+        return try await dbPool.read { db in
             let rows = try Row.fetchAll(
                 db,
                 sql: """
@@ -529,14 +532,14 @@ extension AeroDatabase: WaypointResolving {
 
     func isAirway(identifier: String) async throws -> Bool {
         guard schemaVersion >= 2 else { return false }
-        return try await dbQueue.read { db in
+        return try await dbPool.read { db in
             try Bool.fetchOne(db, sql: "SELECT EXISTS(SELECT 1 FROM airway WHERE id = ?)", arguments: [identifier.uppercased()]) ?? false
         }
     }
 
     func airwayPoints(identifier: String) async throws -> [ResolvedWaypoint] {
         guard schemaVersion >= 2 else { return [] }
-        return try await dbQueue.read { db in
+        return try await dbPool.read { db in
             // Airway ids repeat across Alaska/CONUS/Hawaii; prefer CONUS ('C')
             // until international/regional context exists.
             guard let location = try String.fetchOne(
@@ -561,7 +564,7 @@ extension AeroDatabase: WaypointResolving {
     }
 
     private func airportWaypoint(_ ident: String) async throws -> ResolvedWaypoint? {
-        try await dbQueue.read { db in
+        try await dbPool.read { db in
             try Row.fetchOne(db, sql: "SELECT id, icao_id, name, lat, lon FROM airport WHERE icao_id = ? OR id = ? LIMIT 1", arguments: [ident, ident])
                 .map { row in
                     ResolvedWaypoint(
@@ -580,7 +583,7 @@ extension AeroDatabase: WaypointResolving {
     /// candidate, and without one we fall back to the CONUS preference that
     /// served the US-only database.
     private func navaid(_ ident: String, near anchor: Coordinate? = nil) async throws -> ResolvedWaypoint? {
-        try await dbQueue.read { db in
+        try await dbPool.read { db in
             let sql: String
             var arguments: StatementArguments = [ident]
             if let anchor {
@@ -618,7 +621,7 @@ extension AeroDatabase: WaypointResolving {
     }
 
     private func fix(_ ident: String) async throws -> ResolvedWaypoint? {
-        try await dbQueue.read { db in
+        try await dbPool.read { db in
             try Row.fetchOne(
                 db,
                 sql: """
