@@ -7,6 +7,17 @@ import UIKit
 /// when a pilot zooms in (Retina rendering requests one level deeper than
 /// the visual zoom, making the problem bite early).
 nonisolated enum TileResampler {
+    /// Memoized `upscaledQuadrant`, keyed by the tile's source.
+    static func cachedUpscaledQuadrant(
+        source: String, parentTile data: Data, for path: MKTileOverlayPath, parent: MKTileOverlayPath
+    ) -> Data? {
+        let key = "\(source)|up|\(path.z)/\(path.x)/\(path.y)"
+        if let hit = RenderedTileCache.data(for: key) { return hit }
+        let rendered = upscaledQuadrant(parentTile: data, for: path, parent: parent)
+        if let rendered { RenderedTileCache.store(rendered, for: key) }
+        return rendered
+    }
+
     /// The parent path at `nativeMaxZ` covering the requested deeper tile.
     static func parent(of path: MKTileOverlayPath, nativeMaxZ: Int) -> MKTileOverlayPath {
         let dz = path.z - nativeMaxZ
@@ -34,5 +45,24 @@ nonisolated enum TileResampler {
                 height: tileSize.height * scale
             ))
         }
+    }
+}
+
+/// Tiles the app has already decoded, redrawn, and re-encoded — upscaled
+/// quadrants and neatline-masked tiles. Both cost a PNG decode and encode, and
+/// MapKit asks for the same tiles again on every pan back and zoom step.
+nonisolated enum RenderedTileCache {
+    private static let cache: NSCache<NSString, NSData> = {
+        let cache = NSCache<NSString, NSData>()
+        cache.totalCostLimit = 64 << 20
+        return cache
+    }()
+
+    static func data(for key: String) -> Data? {
+        cache.object(forKey: key as NSString) as Data?
+    }
+
+    static func store(_ data: Data, for key: String) {
+        cache.setObject(data as NSData, forKey: key as NSString, cost: data.count)
     }
 }

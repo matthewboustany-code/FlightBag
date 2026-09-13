@@ -20,6 +20,9 @@ final class MBTilesOverlay: MKTileOverlay {
     /// upscaling these tiles (see TileResampler).
     private let nativeMaxZ: Int
     let coverage: ChartCoverage?
+    /// Identifies this file and clip in `RenderedTileCache`. The coverage is
+    /// part of it: a re-detected neatline must not serve the old cut.
+    private let cacheKey: String
 
     init?(fileURL: URL, coverage: ChartCoverage? = nil) {
         var config = Configuration()
@@ -29,6 +32,7 @@ final class MBTilesOverlay: MKTileOverlay {
         }
         dbPool = queue
         self.coverage = coverage
+        cacheKey = "\(fileURL.path)#\(coverage?.hashValue ?? 0)"
 
         var meta: [String: String] = [:]
         if let metadata = try? queue.read({ db in
@@ -64,9 +68,19 @@ final class MBTilesOverlay: MKTileOverlay {
                 result(data, nil)
                 return
             }
+            let key = "\(self.cacheKey)|mask|\(path.z)/\(path.x)/\(path.y)"
+            if let hit = RenderedTileCache.data(for: key) {
+                result(hit, nil)
+                return
+            }
             // Falling back to the unclipped tile beats a hole in the chart if
             // the mask cannot be applied for some reason.
-            result(ChartTileMask.applying(body, toTile: .tile(path), of: data) ?? data, nil)
+            guard let masked = ChartTileMask.applying(body, toTile: .tile(path), of: data) else {
+                result(data, nil)
+                return
+            }
+            RenderedTileCache.store(masked, for: key)
+            result(masked, nil)
         }
     }
 
@@ -83,7 +97,8 @@ final class MBTilesOverlay: MKTileOverlay {
                 result(nil, error)
                 return
             }
-            result(TileResampler.upscaledQuadrant(parentTile: data, for: path, parent: parent), nil)
+            result(TileResampler.cachedUpscaledQuadrant(
+                source: self.cacheKey, parentTile: data, for: path, parent: parent), nil)
         }
     }
 
