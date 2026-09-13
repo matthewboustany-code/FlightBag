@@ -177,6 +177,13 @@ struct EFBMapView: UIViewRepresentable {
         private var overlayAlphas: [ObjectIdentifier: CGFloat] = [:]
         private let ownshipAnnotation = OwnshipAnnotation()
         private var ownshipOnMap = false
+        private var lastFollowCamera: FollowCamera?
+
+        struct FollowCamera: Equatable {
+            var latitude: Double
+            var longitude: Double
+            var heading: Double
+        }
         private var airportAnnotations: [String: AirportAnnotation] = [:]
         private var annotationTask: Task<Void, Never>?
         private var trafficAnnotations: [UInt32: TrafficAnnotation] = [:]
@@ -731,7 +738,20 @@ struct EFBMapView: UIViewRepresentable {
             let isStale = Date().timeIntervalSince(position.timestamp) > Self.ownshipStaleAfterSeconds
             ownshipView?.setStale(isStale)
 
-            if followOwnship {
+            guard followOwnship else {
+                lastFollowCamera = nil
+                return
+            }
+            // updateUIView runs for layer toggles and route edits too.
+            // Restarting the same camera animation each time made the map
+            // stutter, so only move when the fix or orientation changed.
+            let target = FollowCamera(
+                latitude: position.coordinate.latitude,
+                longitude: position.coordinate.longitude,
+                heading: trackUp ? (position.trackDegrees ?? 0) : 0
+            )
+            if target != lastFollowCamera {
+                lastFollowCamera = target
                 let camera = MKMapCamera(
                     lookingAtCenter: position.coordinate,
                     fromDistance: map.camera.centerCoordinateDistance,
@@ -778,7 +798,7 @@ struct EFBMapView: UIViewRepresentable {
                 guard let target = store.targets[address] else { continue }
                 annotation.update(from: target.report, ownshipAltitudeFt: ownshipAltitudeFt)
                 if let view = map.view(for: annotation) as? TrafficAnnotationView {
-                    view.annotation = annotation  // Redraw the data block.
+                    view.refreshIfNeeded()
                     view.updateRotation(map: map)
                 }
             }
