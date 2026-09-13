@@ -100,7 +100,7 @@ struct ActiveMapProcedure: Hashable {
 final class AppEnvironment {
     /// nil only if the bundled database is missing/corrupt; UI shows a
     /// degraded state rather than crashing.
-    let aeroDatabase: AeroDatabase?
+    private(set) var aeroDatabase: AeroDatabase?
     let weatherStore: WeatherStore
     let notamStore: NotamStore
     let windsAloftStore = WindsAloftStore()
@@ -124,6 +124,17 @@ final class AppEnvironment {
         UserDefaults.standard.bool(forKey: "weatherDemoOffline")
             ? OfflineWeatherProvider()
             : AviationWeatherGovProvider()
+    }
+
+    /// Reopens the newest effective database after a download installs one
+    /// or a cycle boundary passes. Views read `aeroDatabase` on each render,
+    /// so they move to the new file on their next pass; queries already
+    /// running finish against the old one, which stays open until released.
+    func reloadAeroDatabase() {
+        guard let reopened = try? AeroDatabase.open() else { return }
+        if reopened.cycle != aeroDatabase?.cycle || reopened.schemaVersion != aeroDatabase?.schemaVersion {
+            aeroDatabase = reopened
+        }
     }
 
     /// Bumped when FIS-B text lands in the weather cache, so open airport

@@ -53,6 +53,14 @@ final class DownloadCenter {
     private(set) var installed: [String: InstalledArtifact] = [:]
     /// Bumped whenever chart files change on disk so the map re-scans.
     private(set) var chartsVersion = 0
+    /// Bumped when an `aero.sqlite` installs, so AppEnvironment reopens the
+    /// database instead of waiting for a relaunch.
+    private(set) var databaseVersion = 0
+
+    /// UserDefaults key for Settings → "Update charts automatically".
+    static let autoUpdateDefaultsKey = "autoUpdateCharts"
+    /// How far ahead of its effective date the next cycle is fetched.
+    static let preloadWindow: TimeInterval = 7 * 86_400
     /// Every product handed to the transfer service, by id, until it installs,
     /// fails, or is cancelled. A background transfer can finish after a
     /// relaunch, before anything has fetched a manifest to look it up in.
@@ -113,6 +121,8 @@ final class DownloadCenter {
             // A cached manifest still counts as usable, but say so when the
             // refresh behind it failed rather than showing stale data silently.
             manifestError = failure
+            let autoUpdate = UserDefaults.standard.object(forKey: Self.autoUpdateDefaultsKey) as? Bool ?? true
+            if autoUpdate { applyAutomaticUpdates() }
         } else if manifest == nil {
             manifestError = ServerConfig.baseURL == nil
                 ? "No download server configured (Settings → Server)."
@@ -152,11 +162,73 @@ final class DownloadCenter {
         }
     }
 
-    private func enqueue(_ product: DownloadProduct) {
+    private func enqueue(_ product: DownloadProduct, automatic: Bool = false) {
         phases[product.id] = .queued
         inFlightProducts[product.id] = product
         saveState()
-        service.start(product)
+        // Nobody asked for an automatic update, so it must not spend a
+        // pilot's cellular data; a transfer they started may.
+        service.start(product, allowsExpensiveNetworkAccess: !automatic)
+    }
+
+    // MARK: Cycle rollover
+
+    /// Keeps downloaded regions current without a tap: what the README means
+    /// by "downloads ahead and swaps atomically at the effective instant".
+    ///
+    /// - A region recorded against an older cycle re-queues its kinds from
+    ///   the current manifest, and its record moves to that cycle. Before
+    ///   this, a rollover left every region at "0/N offline" with nothing
+    ///   downloading.
+    /// - Within `preloadWindow` of the next cycle, the same products from
+    ///   `nextCycleProducts` are queued too. They install into their own
+    ///   `cycles/{cycle}/` directory, and nothing reads a cycle before it is
+    ///   effective (`ChartStore` and `AeroDatabase` both check), so they sit
+    ///   ready until the flip; `evictSupersededCycles` tidies up after.
+    func applyAutomaticUpdates(now: Date = Date()) {
+        noteCycleFlip(now: now)
+        guard let manifest else { return }
+        var recordsChanged = false
+        for index in records.indices where records[index].cycle != manifest.cycle {
+            records[index].cycle = manifest.cycle
+            recordsChanged = true
+            queueAutomatically(products(regionId: records[index].regionId, kinds: records[index].kinds))
+        }
+        if recordsChanged { saveState() }
+
+        let upcoming = manifest.nextCycleProducts
+        guard let nextCycle = upcoming.first.flatMap({ DataCycle(id: $0.cycle) }),
+              nextCycle.effectiveDate > now,
+              nextCycle.effectiveDate.timeIntervalSince(now) <= Self.preloadWindow else { return }
+        for record in records {
+            queueAutomatically(upcoming.filter {
+                record.kinds.contains($0.contentKind) && $0.regionIds.contains(record.regionId)
+            })
+        }
+    }
+
+    private var lastSeenCycle = DataCycle.current()
+
+    /// At a cycle boundary, anything preloaded for the new cycle becomes
+    /// readable; bump both counters so the map and database pick it up.
+    func noteCycleFlip(now: Date = Date()) {
+        let current = DataCycle.current(at: now)
+        guard current != lastSeenCycle else { return }
+        lastSeenCycle = current
+        chartsVersion += 1
+        databaseVersion += 1
+    }
+
+    private func queueAutomatically(_ products: [DownloadProduct]) {
+        for product in products where installed[product.id] == nil {
+            switch phases[product.id] {
+            case .queued, .downloading, .verifying, .installing, .paused:
+                // Paused is the user's call; an automatic pass doesn't undo it.
+                continue
+            default:
+                enqueue(product, automatic: true)
+            }
+        }
     }
 
     private func forgetInFlight(_ productId: String) {
@@ -283,6 +355,7 @@ final class DownloadCenter {
                     self.inFlightProducts[product.id] = nil
                     self.evictSupersededCycles(of: artifact)
                     self.saveState()
+                    if artifact.contentKind == .aeroDatabase { self.databaseVersion += 1 }
                     // Plates don't affect the map, but bumping anyway lets
                     // storage displays key off one change counter.
                     self.chartsVersion += 1
@@ -485,6 +558,11 @@ final class DownloadCenter {
 
     func setPhaseForTesting(_ phase: Phase, productId: String) {
         phases[productId] = phase
+    }
+
+    func setManifestForTesting(_ manifest: DownloadManifest, records: [RegionDownloadRecord]) {
+        self.manifest = manifest
+        self.records = records
     }
     #endif
 

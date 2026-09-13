@@ -78,14 +78,19 @@ final class DownloadService: NSObject, URLSessionDownloadDelegate, @unchecked Se
         }
     }
 
-    func start(_ product: DownloadProduct) {
+    /// `allowsExpensiveNetworkAccess: false` keeps a transfer off cellular
+    /// and personal hotspots (fresh starts only; resumed tasks keep the
+    /// request they were created with).
+    func start(_ product: DownloadProduct, allowsExpensiveNetworkAccess: Bool = true) {
         session.delegateQueue.addOperation { [self] in
             guard tasksByProduct[product.id] == nil else { return }
             let task: URLSessionDownloadTask
             if let resumeData = try? Data(contentsOf: resumeFile(for: product.id)) {
                 task = session.downloadTask(withResumeData: resumeData)
             } else {
-                task = session.downloadTask(with: product.url)
+                var request = URLRequest(url: product.url)
+                request.allowsExpensiveNetworkAccess = allowsExpensiveNetworkAccess
+                task = session.downloadTask(with: request)
             }
             try? FileManager.default.removeItem(at: resumeFile(for: product.id))
             task.taskDescription = product.id

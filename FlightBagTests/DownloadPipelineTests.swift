@@ -196,3 +196,71 @@ private extension Optional where Wrapped == DownloadCenter.Phase {
         return false
     }
 }
+
+@MainActor
+@Suite(.serialized) struct CycleRolloverTests {
+    private func center() throws -> (DownloadCenter, URL) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("rollover-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        return (DownloadCenter(root: root, sessionIdentifier: "tests.\(UUID().uuidString)"), root)
+    }
+
+    private func product(_ name: String, cycle: String, kind: DownloadProduct.ContentKind = .vfrSectional,
+                         regions: [String] = ["US-TX"]) -> DownloadProduct {
+        DownloadProduct(
+            id: "\(cycle)/tiles/\(name)", contentKind: kind, title: name, cycle: cycle, regionIds: regions,
+            url: URL(string: "https://example.invalid/\(cycle)/\(name)")!, sizeBytes: 1, sha256: ""
+        )
+    }
+
+    @Test func staleRecordRequeuesFromTheCurrentManifest() throws {
+        let (center, root) = try center()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let current = product("San_Antonio_sectional.mbtiles", cycle: "2610")
+        let plates = product("plates_US-TX.zip", cycle: "2610", kind: .plates)
+        center.setManifestForTesting(
+            DownloadManifest(generatedAt: Date(), cycle: "2610", products: [current, plates]),
+            records: [.init(regionId: "US-TX", kinds: [.vfrSectional], cycle: "2609")]
+        )
+
+        center.applyAutomaticUpdates(now: DataCycle(id: "2610")!.effectiveDate.addingTimeInterval(86_400))
+
+        #expect(center.phase(for: current.id) == .queued)
+        // Only the kinds the region keeps.
+        #expect(center.phase(for: plates.id) == nil)
+        #expect(center.records.first?.cycle == "2610")
+    }
+
+    @Test func nextCycleIsPreloadedInsideTheWindowOnly() throws {
+        let next = DataCycle(id: "2611")!
+        let upcoming = product("San_Antonio_sectional.mbtiles", cycle: "2611")
+        let manifest = DownloadManifest(generatedAt: Date(), cycle: "2610", products: [], nextCycleProducts: [upcoming])
+        let record = DownloadCenter.RegionDownloadRecord(regionId: "US-TX", kinds: [.vfrSectional], cycle: "2610")
+
+        let (inside, rootA) = try center()
+        defer { try? FileManager.default.removeItem(at: rootA) }
+        inside.setManifestForTesting(manifest, records: [record])
+        inside.applyAutomaticUpdates(now: next.effectiveDate.addingTimeInterval(-3 * 86_400))
+        #expect(inside.phase(for: upcoming.id) == .queued)
+
+        let (outside, rootB) = try center()
+        defer { try? FileManager.default.removeItem(at: rootB) }
+        outside.setManifestForTesting(manifest, records: [record])
+        outside.applyAutomaticUpdates(now: next.effectiveDate.addingTimeInterval(-10 * 86_400))
+        #expect(outside.phase(for: upcoming.id) == nil)
+    }
+
+    @Test func automaticPassLeavesPausedTransfersAlone() throws {
+        let (center, root) = try center()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let current = product("Houston_sectional.mbtiles", cycle: "2610")
+        center.setManifestForTesting(
+            DownloadManifest(generatedAt: Date(), cycle: "2610", products: [current]),
+            records: [.init(regionId: "US-TX", kinds: [.vfrSectional], cycle: "2609")]
+        )
+        center.setPhaseForTesting(.paused, productId: current.id)
+        center.applyAutomaticUpdates(now: DataCycle(id: "2610")!.effectiveDate)
+        #expect(center.phase(for: current.id) == .paused)
+    }
+}

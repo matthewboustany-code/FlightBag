@@ -31,6 +31,14 @@ import FBModels
         #expect(AeroDatabase.newestInstalledCycle(in: root)?.id == "2608")
     }
 
+    @Test func aDatabaseDownloadedAheadWaitsForItsCycle() throws {
+        let root = try cyclesRoot(with: ["2610", "2611"])
+        defer { try? FileManager.default.removeItem(at: root) }
+        let beforeFlip = DataCycle(id: "2611")!.effectiveDate.addingTimeInterval(-60)
+        #expect(AeroDatabase.newestInstalledCycle(in: root, now: beforeFlip)?.id == "2610")
+        #expect(AeroDatabase.newestInstalledCycle(in: root, now: beforeFlip.addingTimeInterval(120))?.id == "2611")
+    }
+
     @Test func noParseableCycleMeansNone() throws {
         let root = try cyclesRoot(with: ["seed", "junk"])
         defer { try? FileManager.default.removeItem(at: root) }

@@ -74,11 +74,14 @@ nonisolated struct ChartStore: Sendable {
         return authority == .unknown ? nil : authority
     }
 
-    private func scanTileSets(matching include: (String) -> Bool) -> [ChartSet] {
+    private func scanTileSets(matching include: (String) -> Bool, now: Date = Date()) -> [ChartSet] {
         let fileManager = FileManager.default
         guard let cycles = try? fileManager.contentsOfDirectory(atPath: cyclesRoot.path) else { return [] }
         var sets: [ChartSet] = []
-        for cycle in cycles.sorted().reversed() {
+        // Newest effective cycle first. A cycle downloaded ahead of its
+        // effective date waits: flying next month's chart today is wrong.
+        let effective = cycles.compactMap(DataCycle.init(id:)).filter { $0.effectiveDate <= now }.sorted(by: >)
+        for cycle in effective.map(\.id) {
             let tilesDir = cyclesRoot.appendingPathComponent("\(cycle)/tiles")
             guard let files = try? fileManager.contentsOfDirectory(atPath: tilesDir.path) else { continue }
             for file in files where file.hasSuffix(".mbtiles") && include(file) {

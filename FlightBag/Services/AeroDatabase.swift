@@ -58,13 +58,15 @@ final class AeroDatabase: Sendable {
         return try AeroDatabase(path: targetDB.path)
     }
 
-    /// The newest cycle directory holding an `aero.sqlite`, compared as
-    /// cycles. A string sort let a `seed` directory (written when the bundled
-    /// database has no cycle) outrank every real cycle forever.
-    static func newestInstalledCycle(in cyclesRoot: URL) -> DataCycle? {
+    /// The newest effective cycle directory holding an `aero.sqlite`,
+    /// compared as cycles. A string sort let a `seed` directory (written when
+    /// the bundled database has no cycle) outrank every real cycle forever; a
+    /// database downloaded ahead of its cycle waits for the effective date.
+    static func newestInstalledCycle(in cyclesRoot: URL, now: Date = Date()) -> DataCycle? {
         let fileManager = FileManager.default
         return ((try? fileManager.contentsOfDirectory(atPath: cyclesRoot.path)) ?? [])
             .compactMap(DataCycle.init(id:))
+            .filter { $0.effectiveDate <= now }
             .filter { fileManager.fileExists(atPath: cyclesRoot.appendingPathComponent("\($0.id)/aero.sqlite").path) }
             .max()
     }

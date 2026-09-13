@@ -7,6 +7,7 @@ struct SettingsHomeView: View {
     @AppStorage(ServerConfig.defaultsKey) private var serverBaseURL = ""
     @AppStorage(UnitSystemPreference.defaultsKey) private var unitSystem = UnitSystemPreference.automatic.rawValue
     @AppStorage("openAIPKey") private var openAIPKey = ""
+    @AppStorage(DownloadCenter.autoUpdateDefaultsKey) private var autoUpdateCharts = true
     @Environment(AppEnvironment.self) private var environment
 
     var body: some View {
@@ -25,6 +26,8 @@ struct SettingsHomeView: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .accessibilityIdentifier("settings.serverURL")
+                    Toggle("Update charts automatically", isOn: $autoUpdateCharts)
+                        .accessibilityIdentifier("settings.autoUpdateCharts")
                 } header: {
                     Text("Download Server")
                 } footer: {
@@ -32,7 +35,8 @@ struct SettingsHomeView: View {
                     // straight into a TLS handshake against a server that only
                     // speaks plain HTTP — the failure looks like the server is
                     // down rather than like a typo.
-                    Text("Where chart-region downloads come from. Include the scheme: a server on your own network is usually http://, not https://. Leave empty until a FlightBag data server is available.")
+                    Text("Where chart-region downloads come from. Include the scheme: a server on your own network is usually http://, not https://. Leave empty until a FlightBag data server is available. "
+                        + "Automatic updates fetch each new cycle for the regions you keep, starting a week before it takes effect, on Wi-Fi only.")
                 }
                 Section {
                     SecureField("openAIP API key", text: $openAIPKey)

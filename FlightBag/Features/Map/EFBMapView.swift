@@ -104,6 +104,8 @@ struct EFBMapView: UIViewRepresentable {
         coordinator.onSelectAirport = onSelectAirport
         coordinator.onInspectAdvisories = onInspectAdvisories
         coordinator.airportsEnabled = layers.airportsEnabled
+        // The database can be swapped under a running map (cycle rollover).
+        coordinator.aeroDatabase = environment.aeroDatabase
         coordinator.layersState = layers
         coordinator.syncOverlays(on: map, layers: layers)
         coordinator.syncFISBRadar(on: map, store: environment.fisbRadarStore, layers: layers)
