@@ -9,9 +9,15 @@ import FBFISB
 struct MapHomeView: View {
     @Environment(AppEnvironment.self) private var environment
     @Environment(\.horizontalSizeClass) private var sizeClass
-    @State private var layers = MapLayersState()
-    @State private var followOwnship = false
-    @State private var trackUp = false
+    @State private var layers: MapLayersState = {
+        let layers = MapLayersState()
+        if !MapLayersState.isDemoLaunch { layers.load() }
+        return layers
+    }()
+    @State private var followOwnship = !MapLayersState.isDemoLaunch
+        && UserDefaults.standard.bool(forKey: MapLayersState.followDefaultsKey)
+    @State private var trackUp = !MapLayersState.isDemoLaunch
+        && UserDefaults.standard.bool(forKey: MapLayersState.trackUpDefaultsKey)
     @State private var showLayersPanel = false
     @State private var inspection: MapInspection?
     @State private var showRouteEditor = false
@@ -119,6 +125,22 @@ struct MapHomeView: View {
         }
         .animation(.snappy, value: inspection)
         .animation(.snappy, value: showRouteEditor)
+        // Saved half a second after the last change: a slider drag is one
+        // write, not one per frame. task(id:) cancels the pending save.
+        .task(id: layers.snapshot) {
+            guard !MapLayersState.isDemoLaunch else { return }
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            layers.save()
+        }
+        .onChange(of: followOwnship) { _, value in
+            guard !MapLayersState.isDemoLaunch else { return }
+            UserDefaults.standard.set(value, forKey: MapLayersState.followDefaultsKey)
+        }
+        .onChange(of: trackUp) { _, value in
+            guard !MapLayersState.isDemoLaunch else { return }
+            UserDefaults.standard.set(value, forKey: MapLayersState.trackUpDefaultsKey)
+        }
         .task {
             // Screenshot automation skips the location prompt, which would
             // otherwise sit modally over the map.
