@@ -21,6 +21,7 @@ struct MapHomeView: View {
     @State private var showLayersPanel = false
     @State private var inspection: MapInspection?
     @State private var showRouteEditor = false
+    @AppStorage(UnitSystemPreference.defaultsKey) private var unitSystem = UnitSystemPreference.automatic.rawValue
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -109,6 +110,14 @@ struct MapHomeView: View {
                 // does not satisfy the licence that demands it.
                 VStack(alignment: .leading, spacing: 4) {
                     attributionStrip
+                    if let position = environment.positionSource.position {
+                        FlightDataStrip(
+                            position: position,
+                            units: (UnitSystemPreference(rawValue: unitSystem) ?? .automatic)
+                                .preferences(for: UnitSystemPreference.deviceJurisdiction)
+                        )
+                        .padding(.leading, 12)
+                    }
                     statusStrip
                 }
             }
@@ -746,5 +755,47 @@ struct TrafficThreatBanner: View {
         }
         parts.append(String(format: "%.1f NM", threat.distanceNM))
         return parts.joined(separator: " · ")
+    }
+}
+
+/// Ground speed, altitude, and track from whichever position source is live.
+/// Unknown values read as dashes rather than vanishing, so the strip keeps its
+/// shape and a missing number is visibly missing.
+struct FlightDataStrip: View {
+    let position: OwnshipPosition
+    let units: UnitPreferences
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ForEach(Self.fields(for: position, units: units), id: \.label) { field in
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(field.label)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(field.value)
+                        .font(.callout.weight(.semibold))
+                        .monospacedDigit()
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("map.flightData")
+    }
+
+    struct Field: Equatable {
+        var label: String
+        var value: String
+    }
+
+    static func fields(for position: OwnshipPosition, units: UnitPreferences) -> [Field] {
+        [
+            Field(label: "GS", value: position.groundSpeedKt.map { units.formatSpeed(knots: $0) } ?? "—"),
+            Field(label: "ALT", value: position.altitudeFeet.map { units.formatAltitude(feet: $0) } ?? "—"),
+            // Track is true: GPS and ADS-B both report it that way.
+            Field(label: "TRK", value: position.trackDegrees.map { AngleFormat.course($0) + "°T" } ?? "—"),
+        ]
     }
 }
