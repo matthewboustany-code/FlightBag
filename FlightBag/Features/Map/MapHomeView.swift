@@ -355,11 +355,12 @@ struct MapHomeView: View {
         HStack(spacing: 8) {
             if let chart = layers.chart {
                 let offline = layers.offlineSetsForSelectedChart
+                let streaming = layers.streamingAuthorityName
                 Label(
                     offline.isEmpty
-                        ? "\(chart.displayName) · FAA streaming"
+                        ? "\(chart.displayName)" + (streaming.map { " · \($0) streaming" } ?? "")
                         : "\(chart.displayName) · offline (\(offline.map(\.name).joined(separator: ", ")))"
-                            + (layers.streamChartGaps ? " + streaming" : ""),
+                            + (layers.streamChartGaps && streaming != nil ? " + streaming" : ""),
                     systemImage: offline.isEmpty ? "antenna.radiowaves.left.and.right" : "internaldrive"
                 )
             }

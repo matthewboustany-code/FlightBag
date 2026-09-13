@@ -151,6 +151,15 @@ final class MapLayersState {
     /// descriptors — the map still streams on a cold first launch.
     var chartSources: [ChartSource] = []
 
+    /// Who the selected chart streams from ("FAA", "open flightmaps"), or nil
+    /// when nothing streams it — the status strip must not claim a service
+    /// that isn't being used.
+    var streamingAuthorityName: String? {
+        guard let chart else { return nil }
+        return ChartSource.streamingSource(for: chart.contentKind, manifestSources: chartSources)?
+            .authority.displayName
+    }
+
     /// Attribution for whatever is on screen, deduplicated.
     ///
     /// Not decoration: the OFMA licence and CC BY-NC both require the source

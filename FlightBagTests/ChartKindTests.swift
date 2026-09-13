@@ -51,3 +51,21 @@ import FBModels
         #expect(ChartKind(contentKind: .aeroDatabase) == nil)
     }
 }
+
+@MainActor
+@Suite struct StreamingStatusTests {
+    @Test func namesTheAuthorityActuallyStreaming() {
+        let layers = MapLayersState()
+        layers.chart = .vfrSectional
+        #expect(layers.streamingAuthorityName == "FAA")
+
+        layers.chartSources = [ChartSource(
+            id: "ofm-vfr", authority: .openFlightMaps, contentKind: .vfrSectional, title: "OFM",
+            streaming: .init(urlTemplate: "https://example.invalid/{z}/{x}/{y}", minimumZoom: 5, maximumZoom: 11)
+        )]
+        #expect(layers.streamingAuthorityName == "open flightmaps")
+
+        layers.chart = nil
+        #expect(layers.streamingAuthorityName == nil)
+    }
+}
