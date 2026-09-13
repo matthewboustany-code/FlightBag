@@ -88,6 +88,17 @@ struct MapHomeView: View {
             .padding(.trailing, 12)
             .padding(.top, 8)
         }
+        .overlay(alignment: .top) {
+            if layers.trafficEnabled,
+               let threat = environment.trafficStore.nearestThreat(ownship: environment.positionSource.position) {
+                TrafficThreatBanner(threat: threat)
+                    .padding(.top, 8)
+                    // Clear of the map buttons on the trailing edge.
+                    .padding(.leading, 12)
+                    .padding(.trailing, 64)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
         .overlay(alignment: .bottomLeading) {
             // The compact bottom card covers this corner; hide rather than
             // stack.
@@ -307,7 +318,14 @@ struct MapHomeView: View {
             ("N9021H", 0.09, -0.04, 3200, 315, 0, true),
             ("N556DG", -0.07, -0.06, 5500, 45, 500, true),
             ("N700GT", 0.005, 0.004, 600, 270, 0, false),
+            // ~1 NM ahead of the demo ownship, 300 ft above, head-on: close
+            // enough to raise the proximity banner.
+            ("N52TA", 0.018, 0.004, 3300, 185, 0, true),
         ]
+        environment.positionSource.demoPosition = OwnshipPosition(
+            coordinate: center, trackDegrees: 360, groundSpeedKt: 100, altitudeFeet: 3000,
+            timestamp: .distantFuture, sourceName: "Demo"
+        )
         for (index, sample) in samples.enumerated() {
             let report = GDL90Message.TrafficReport(
                 address: 0xC0_00_01 + UInt32(index),
@@ -692,4 +710,41 @@ struct InspectedAdvisories: Identifiable {
 #Preview {
     MapHomeView()
         .environment(AppEnvironment())
+}
+
+/// Amber for a nearby closing target, red when the receiver itself flags it.
+/// Reads like a TCAS advisory: who, where on the clock, above or below, how far.
+struct TrafficThreatBanner: View {
+    let threat: TrafficThreat
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+            Text("TRAFFIC").fontWeight(.heavy)
+            Text(Self.detail(for: threat))
+                .monospacedDigit()
+                // One line: a wrap can split "+300" from "ft".
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+        }
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(threat.receiverAlert ? .white : .black)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(threat.receiverAlert ? Color.red : Color.orange, in: Capsule())
+        .shadow(radius: 3, y: 1)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("map.trafficThreat")
+    }
+
+    static func detail(for threat: TrafficThreat) -> String {
+        var parts: [String] = []
+        if !threat.callsign.isEmpty { parts.append(threat.callsign) }
+        parts.append("\(threat.clockPosition) o'clock")
+        if let relative = threat.relativeAltitudeFt {
+            parts.append(relative == 0 ? "same alt" : (relative > 0 ? "+" : "−") + "\(abs(relative)) ft")
+        }
+        parts.append(String(format: "%.1f NM", threat.distanceNM))
+        return parts.joined(separator: " · ")
+    }
 }

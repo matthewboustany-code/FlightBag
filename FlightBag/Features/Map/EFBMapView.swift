@@ -138,7 +138,8 @@ struct EFBMapView: UIViewRepresentable {
             on: map,
             store: environment.trafficStore,
             enabled: layers.trafficEnabled,
-            ownshipAltitudeFt: position?.altitudeFeet.map(Int.init)
+            ownshipAltitudeFt: position?.altitudeFeet.map(Int.init),
+            threatAddress: environment.trafficStore.nearestThreat(ownship: position)?.address
         )
         if !layers.airportsEnabled {
             coordinator.clearAirportAnnotations(on: map)
@@ -788,7 +789,7 @@ struct EFBMapView: UIViewRepresentable {
         /// Mutates existing traffic annotations in place and adds/removes
         /// only on membership change — the airport delta pattern, tuned for
         /// the 1 Hz update rate.
-        func syncTraffic(on map: MKMapView, store: TrafficStore, enabled: Bool, ownshipAltitudeFt: Int?) {
+        func syncTraffic(on map: MKMapView, store: TrafficStore, enabled: Bool, ownshipAltitudeFt: Int?, threatAddress: UInt32? = nil) {
             guard enabled else {
                 if !trafficAnnotations.isEmpty {
                     map.removeAnnotations(Array(trafficAnnotations.values))
@@ -818,6 +819,7 @@ struct EFBMapView: UIViewRepresentable {
             for (address, annotation) in trafficAnnotations {
                 guard let target = store.targets[address] else { continue }
                 annotation.update(from: target.report, ownshipAltitudeFt: ownshipAltitudeFt)
+                annotation.setProximityThreat(address == threatAddress)
                 if let view = map.view(for: annotation) as? TrafficAnnotationView {
                     view.refreshIfNeeded()
                     view.updateRotation(map: map)

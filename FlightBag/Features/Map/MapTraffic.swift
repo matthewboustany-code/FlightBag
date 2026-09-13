@@ -15,6 +15,8 @@ final class TrafficAnnotation: NSObject, MKAnnotation {
     var verticalTrend: VerticalTrend = .level
     var isAirborne = true
     var isAlerted = false
+    /// The target the proximity banner is calling out.
+    private(set) var isProximityThreat = false
     /// Bumped by `update(from:)` only when something the data block or symbol
     /// draws changed, so views skip redrawing identical reports.
     private(set) var reportVersion = 0
@@ -72,7 +74,10 @@ final class TrafficAnnotationView: MKAnnotationView {
     private func configure() {
         guard let traffic = annotation as? TrafficAnnotation else { return }
         drawnVersion = traffic.reportVersion
+        // Red: the receiver's alert. Yellow: the proximity banner's target,
+        // so the banner and the chevron it means can be matched at a glance.
         let tint: UIColor = traffic.isAlerted ? .systemRed
+            : traffic.isProximityThreat ? .systemYellow
             : traffic.isAirborne ? .systemOrange : .systemGray
         let symbol = traffic.isAirborne ? "arrowtriangle.up.fill" : "square.fill"
         let config = UIImage.SymbolConfiguration(pointSize: 15, weight: .black)
@@ -121,6 +126,12 @@ final class TrafficAnnotationView: MKAnnotationView {
 extension TrafficAnnotation {
     /// Update mutable fields from a fresh report; `ownshipAltitude` drives
     /// the relative-altitude data block.
+    func setProximityThreat(_ threat: Bool) {
+        guard threat != isProximityThreat else { return }
+        isProximityThreat = threat
+        reportVersion += 1
+    }
+
     func update(from report: GDL90Message.TrafficReport, ownshipAltitudeFt: Int?) {
         coordinate = CLLocationCoordinate2D(latitude: report.latitude, longitude: report.longitude)
         // Track is applied by rotation, not by a redraw.
