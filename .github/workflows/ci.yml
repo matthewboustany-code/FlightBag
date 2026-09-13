@@ -1,0 +1,56 @@
+# The architecture doc promises that FlightBagCore is Linux-clean and that the
+# server builds against it; this is what enforces both. XCUITests are never run
+# here or anywhere automated: they freeze the machine they run on.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    name: Linux (FlightBagCore tests, server build)
+    runs-on: ubuntu-latest
+    # Matches Packages/FlightBagCore/Package.swift (tools 6.1) and the
+    # server Dockerfile's build stage.
+    container: swift:6.1-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system SQLite (GRDB links it on Linux)
+        run: apt-get update && apt-get install -y --no-install-recommends libsqlite3-dev
+      - name: Test FlightBagCore
+        working-directory: Packages/FlightBagCore
+        run: swift test
+      - name: Build server
+        working-directory: Server
+        run: swift build
+
+  ios:
+    name: iOS (app build, unit tests)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      # The app target uses default MainActor isolation, which needs Xcode 26.
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '26'
+      - name: Pick a simulator
+        id: sim
+        run: |
+          udid=$(xcrun simctl list devices available -j \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for r,v in d.items() if "iOS" in r for x in v if x["name"].startswith("iPhone")))')
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+      - name: Build app
+        run: >
+          xcodebuild -project FlightBag.xcodeproj -scheme FlightBag
+          -destination "id=${{ steps.sim.outputs.udid }}" build
+      - name: Unit tests (FlightBagTests only, never the UI tests)
+        run: >
+          xcodebuild -project FlightBag.xcodeproj -scheme FlightBag
+          -destination "id=${{ steps.sim.outputs.udid }}"
+          test -only-testing:FlightBagTests

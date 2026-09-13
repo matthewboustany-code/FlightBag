@@ -52,7 +52,12 @@ struct UDPSender {
     private var address = sockaddr_in()
 
     init?(host: String, port: UInt16) {
+        #if canImport(Darwin)
         socketFD = socket(AF_INET, SOCK_DGRAM, 0)
+        #else
+        // Glibc imports SOCK_DGRAM as an enum case, not an Int32.
+        socketFD = socket(AF_INET, Int32(SOCK_DGRAM.rawValue), 0)
+        #endif
         guard socketFD >= 0 else { return nil }
         address.sin_family = sa_family_t(AF_INET)
         address.sin_port = port.bigEndian
