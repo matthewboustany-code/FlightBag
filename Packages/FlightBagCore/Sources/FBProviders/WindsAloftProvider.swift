@@ -41,13 +41,34 @@ public protocol WindsAloftProvider: Sendable {
     func windsAloft(forecastHours: Int) async throws -> [WindsAloftStation]
 }
 
+public enum WindsAloftForecast {
+    /// The FB forecast periods the NWS publishes.
+    public static let periods = [6, 12, 24]
+
+    /// The period whose valid window best covers a departure. The 6 h product
+    /// is used through 9 h out and the 12 h through 18 h, matching where each
+    /// period's "for use" window ends; anything later takes the 24 h.
+    public static func period(forDeparture departure: Date?, now: Date = Date()) -> Int {
+        guard let departure else { return 6 }
+        let hoursAhead = departure.timeIntervalSince(now) / 3_600
+        if hoursAhead <= 9 { return 6 }
+        if hoursAhead <= 18 { return 12 }
+        return 24
+    }
+}
+
 extension AviationWeatherGovProvider: WindsAloftProvider {
     /// The Data API serves the FB text per lookout region; low-level covers
     /// 3000–39000 ft which is all a GA navlog needs.
     private static let conusRegions = ["bos", "mia", "chi", "dfw", "slc", "sfo"]
 
+    /// Regions are fetched independently: one 5xx costs that region's
+    /// stations, not all six. Throws only when every region failed, so an
+    /// empty result still means "the product was empty".
     public func windsAloft(forecastHours: Int = 6) async throws -> [WindsAloftStation] {
         var stations: [String: WindsAloftStation] = [:]
+        var lastError: Error?
+        var succeeded = 0
         for region in Self.conusRegions {
             var components = URLComponents(url: windtempURL, resolvingAgainstBaseURL: false)!
             components.queryItems = [
@@ -55,12 +76,20 @@ extension AviationWeatherGovProvider: WindsAloftProvider {
                 URLQueryItem(name: "level", value: "low"),
                 URLQueryItem(name: "fcst", value: String(forecastHours)),
             ]
-            let data = try await http.get(components.url!)
+            let data: Data
+            do {
+                data = try await http.get(components.url!)
+                succeeded += 1
+            } catch {
+                lastError = error
+                continue
+            }
             guard let text = String(data: data, encoding: .utf8) else { continue }
             for station in FBWindsParser.parse(text) {
                 stations[station.identifier] = station
             }
         }
+        if succeeded == 0, let lastError { throw lastError }
         return Array(stations.values)
     }
 }
