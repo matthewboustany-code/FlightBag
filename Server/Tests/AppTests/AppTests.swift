@@ -22,6 +22,43 @@ import FBModels
         try await app.asyncShutdown()
     }
 
+    @Test func healthzAnswersWithoutParsingTheManifest() async throws {
+        let app = try await Application.make(.testing)
+        do {
+            try await configure(app)
+            try await app.testing().test(.GET, "healthz") { response async throws in
+                #expect(response.status == .ok)
+                #expect(response.body.string.hasPrefix("ok "))
+            }
+        } catch {
+            try await app.asyncShutdown()
+            throw error
+        }
+        try await app.asyncShutdown()
+    }
+
+    @Test func manifestIsCacheable() async throws {
+        let app = try await Application.make(.testing)
+        do {
+            try await configure(app)
+            var etag: String?
+            try await app.testing().test(.GET, "v1/manifest") { response async throws in
+                #expect(response.headers.first(name: .cacheControl) == "max-age=300")
+                etag = response.headers.first(name: .eTag)
+            }
+            // Only a checkout with a generated manifest.json has a file to tag.
+            if let etag {
+                try await app.testing().test(.GET, "v1/manifest", headers: [HTTPHeaders.Name.ifNoneMatch.description: etag]) { response async throws in
+                    #expect(response.status == .notModified)
+                }
+            }
+        } catch {
+            try await app.asyncShutdown()
+            throw error
+        }
+        try await app.asyncShutdown()
+    }
+
     /// Having no FAA credentials is the state a self-hoster starts in. It must
     /// degrade to an explicit "not configured" rather than a 500 or, worse, an
     /// empty list that reads as "no NOTAMs".

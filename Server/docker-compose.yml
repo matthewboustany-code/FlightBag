@@ -33,7 +33,7 @@ services:
     # server that is up but wedged would otherwise sit there serving nothing,
     # and the app's only symptom is downloads quietly failing.
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/v1/manifest"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
       interval: 60s
       timeout: 10s
       retries: 3
