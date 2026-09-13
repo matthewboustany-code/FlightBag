@@ -44,7 +44,8 @@ actor WeatherStore {
         cacheURL = support.appendingPathComponent("FlightBag/weather-cache.json")
         if let data = try? Data(contentsOf: cacheURL),
            let stored = try? JSONDecoder().decode([String: StationWeather].self, from: data) {
-            cache = stored
+            // Pruned at load; the next persist writes the trimmed file.
+            cache = StationCachePruning.pruned(stored, fetchedAt: \.fetchedAt)
         }
     }
 
