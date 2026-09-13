@@ -64,6 +64,14 @@ struct EFBMapView: UIViewRepresentable {
         ruler.delegate = context.coordinator
         map.addGestureRecognizer(ruler)
 
+        // Dragging the map means the pilot wants to look somewhere else;
+        // follow mode fighting that drag is worse than dropping out of it.
+        // The follow button stays the way back.
+        let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleUserPan(_:)))
+        pan.cancelsTouchesInView = false
+        pan.delegate = context.coordinator
+        map.addGestureRecognizer(pan)
+
         let hud = RulerHUDView(frame: map.bounds)
         hud.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         map.addSubview(hud)
@@ -84,14 +92,14 @@ struct EFBMapView: UIViewRepresentable {
         return map
     }
 
-    /// `-mapDemoCenter "44.5,-105.6"` → a coordinate, or nil when absent or
-    /// unparseable (in which case the default framing stands).
     /// A span past 180° latitude makes an invalid region, which `setRegion`
     /// throws on (`-mapDemoSpan 200` crashed). Clamp to what MapKit accepts.
     static func demoSpan(_ degrees: Double) -> MKCoordinateSpan {
         MKCoordinateSpan(latitudeDelta: min(degrees, 170), longitudeDelta: min(degrees, 350))
     }
 
+    /// `-mapDemoCenter "44.5,-105.6"` → a coordinate, or nil when absent or
+    /// unparseable (in which case the default framing stands).
     private static func demoCenter() -> CLLocationCoordinate2D? {
         guard let raw = UserDefaults.standard.string(forKey: "mapDemoCenter") else { return nil }
         let parts = raw.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
@@ -104,6 +112,11 @@ struct EFBMapView: UIViewRepresentable {
         coordinator.onSelectAirport = onSelectAirport
         coordinator.onInspectAdvisories = onInspectAdvisories
         coordinator.airportsEnabled = layers.airportsEnabled
+        coordinator.onUserPan = { [$followOwnship, $trackUp] in
+            guard $followOwnship.wrappedValue else { return }
+            $followOwnship.wrappedValue = false
+            $trackUp.wrappedValue = false
+        }
         // The database can be swapped under a running map (cycle rollover).
         coordinator.aeroDatabase = environment.aeroDatabase
         coordinator.layersState = layers
@@ -146,6 +159,12 @@ struct EFBMapView: UIViewRepresentable {
         var plateStore: PlateStore?
         var layersState: MapLayersState?
         var onSelectAirport: (String) -> Void = { _ in }
+        var onUserPan: () -> Void = {}
+
+        @objc func handleUserPan(_ recognizer: UIPanGestureRecognizer) {
+            guard recognizer.state == .began else { return }
+            onUserPan()
+        }
         var onInspectAdvisories: ([AdvisoryDisplayInfo]) -> Void = { _ in }
         var onPlateUnavailable: () -> Void = {}
         var airportsEnabled = true
