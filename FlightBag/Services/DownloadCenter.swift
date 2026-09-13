@@ -53,30 +53,47 @@ final class DownloadCenter {
     private(set) var installed: [String: InstalledArtifact] = [:]
     /// Bumped whenever chart files change on disk so the map re-scans.
     private(set) var chartsVersion = 0
+    /// Every product handed to the transfer service, by id, until it installs,
+    /// fails, or is cancelled. A background transfer can finish after a
+    /// relaunch, before anything has fetched a manifest to look it up in.
+    private var inFlightProducts: [String: DownloadProduct] = [:]
 
     private var service: DownloadService!
     private let manifestClient = ManifestClient()
     private let cyclesRoot: URL
     private let stateURL: URL
 
-    init() {
-        let support = (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
+    /// `root` and `sessionIdentifier` exist for tests; the app uses the defaults.
+    init(root: URL? = nil, sessionIdentifier: String = DownloadService.defaultIdentifier) {
+        let support = root
+            ?? (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
             ?? FileManager.default.temporaryDirectory
         cyclesRoot = support.appendingPathComponent("FlightBag/cycles", isDirectory: true)
         stateURL = support.appendingPathComponent("FlightBag/downloads/state.json")
         loadState()
         reconcileWithDisk()
+        // A cold launch has a manifest on disk from last time; use it until a
+        // refresh replaces it, rather than showing nothing offline.
+        manifest = manifestClient.cached()
 
-        service = DownloadService(events: .init(
+        service = DownloadService(identifier: sessionIdentifier, events: .init(
             progress: { [weak self] productId, fraction, _ in
-                guard let self, self.phases[productId] != .paused else { return }
-                self.phases[productId] = .downloading(fraction)
+                guard let self else { return }
+                // Only a transfer still moving bytes takes progress. A callback
+                // queued behind didFinishDownloadingTo, or the throttle firing
+                // once more, would otherwise drag a verifying or installed
+                // product back to "downloading".
+                switch self.phases[productId] {
+                case .queued, .downloading, nil: self.phases[productId] = .downloading(fraction)
+                default: return
+                }
             },
             finished: { [weak self] productId, staged in
                 self?.handleFinished(productId: productId, staged: staged)
             },
             failed: { [weak self] productId, message in
                 self?.phases[productId] = .failed(message)
+                self?.forgetInFlight(productId)
             }
         ))
 
@@ -130,10 +147,21 @@ final class DownloadCenter {
             case .queued, .downloading, .verifying, .installing:
                 continue
             default:
-                phases[product.id] = .queued
-                service.start(product)
+                enqueue(product)
             }
         }
+    }
+
+    private func enqueue(_ product: DownloadProduct) {
+        phases[product.id] = .queued
+        inFlightProducts[product.id] = product
+        saveState()
+        service.start(product)
+    }
+
+    private func forgetInFlight(_ productId: String) {
+        guard inFlightProducts.removeValue(forKey: productId) != nil else { return }
+        saveState()
     }
 
     func pause(productId: String) {
@@ -143,13 +171,13 @@ final class DownloadCenter {
 
     func resume(productId: String) {
         guard let product = product(for: productId) else { return }
-        phases[productId] = .queued
-        service.start(product)
+        enqueue(product)
     }
 
     func cancel(productId: String) {
         service.cancel(productId: productId)
         phases[productId] = nil
+        forgetInFlight(productId)
     }
 
     func retry(productId: String) {
@@ -229,7 +257,10 @@ final class DownloadCenter {
 
     // MARK: Install pipeline
 
+    /// The snapshot taken when the transfer started wins: it is what was
+    /// actually requested, and it survives a relaunch with no manifest.
     private func product(for productId: String) -> DownloadProduct? {
+        if let snapshot = inFlightProducts[productId] { return snapshot }
         guard let manifest else { return nil }
         return (manifest.products + manifest.nextCycleProducts).first { $0.id == productId }
     }
@@ -237,6 +268,7 @@ final class DownloadCenter {
     private func handleFinished(productId: String, staged: URL) {
         guard let product = product(for: productId) else {
             phases[productId] = .failed("Product no longer in manifest")
+            try? FileManager.default.removeItem(at: staged)
             return
         }
         phases[productId] = .verifying
@@ -248,6 +280,7 @@ final class DownloadCenter {
                     guard let self else { return }
                     self.installed[product.id] = artifact
                     self.phases[product.id] = .installed
+                    self.inFlightProducts[product.id] = nil
                     self.evictSupersededCycles(of: artifact)
                     self.saveState()
                     // Plates don't affect the map, but bumping anyway lets
@@ -257,6 +290,7 @@ final class DownloadCenter {
             } catch {
                 await MainActor.run { [weak self] in
                     self?.phases[product.id] = .failed(error.localizedDescription)
+                    self?.forgetInFlight(product.id)
                 }
             }
         }
@@ -438,11 +472,29 @@ final class DownloadCenter {
         ]
     }
 
+    // MARK: Test hooks
+
+    #if DEBUG
+    func finishForTesting(productId: String, staged: URL) {
+        handleFinished(productId: productId, staged: staged)
+    }
+
+    func progressForTesting(productId: String, fraction: Double) {
+        service.events.progress(productId, fraction, 0)
+    }
+
+    func setPhaseForTesting(_ phase: Phase, productId: String) {
+        phases[productId] = phase
+    }
+    #endif
+
     // MARK: Persistence
 
     private struct PersistedState: Codable {
         var records: [RegionDownloadRecord]
         var installed: [String: InstalledArtifact]
+        /// Optional so a state.json from before this field still decodes.
+        var inFlightProducts: [String: DownloadProduct]?
     }
 
     private func loadState() {
@@ -450,10 +502,11 @@ final class DownloadCenter {
               let state = try? JSONDecoder().decode(PersistedState.self, from: data) else { return }
         records = state.records
         installed = state.installed
+        inFlightProducts = state.inFlightProducts ?? [:]
     }
 
     private func saveState() {
-        let state = PersistedState(records: records, installed: installed)
+        let state = PersistedState(records: records, installed: installed, inFlightProducts: inFlightProducts)
         guard let data = try? JSONEncoder().encode(state) else { return }
         try? FileManager.default.createDirectory(at: stateURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: stateURL, options: .atomic)

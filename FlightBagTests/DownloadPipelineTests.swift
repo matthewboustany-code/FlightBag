@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import FBModels
 @testable import FlightBag
 
 @Suite struct ZipExtractorTests {
@@ -114,5 +115,84 @@ import Testing
     @Test func productIdsFlattenToSafeFileNames() {
         #expect(DownloadService.fileSafe("2607/tiles/San_Antonio_sectional.mbtiles")
             == "2607_tiles_San_Antonio_sectional.mbtiles")
+    }
+}
+
+/// Serialized: each test owns a background URLSession, and iOS allows only
+/// one live session per identifier.
+@MainActor
+@Suite(.serialized) struct DownloadCenterRelaunchTests {
+    private func scratchRoot() throws -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("download-center-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func product(sha256: String) -> DownloadProduct {
+        DownloadProduct(
+            id: "2609/db/aero.sqlite", contentKind: .aeroDatabase, title: "Database", cycle: "2609",
+            regionIds: ["US-TX"], url: URL(string: "https://example.invalid/aero.sqlite")!,
+            sizeBytes: 3, sha256: sha256
+        )
+    }
+
+    /// Writes the state.json a previous launch would have left mid-transfer.
+    private func writeInFlightState(_ product: DownloadProduct, root: URL) throws {
+        let json: [String: Any] = [
+            "records": [], "installed": [:],
+            "inFlightProducts": [product.id: try JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(product))],
+        ]
+        let stateURL = root.appendingPathComponent("FlightBag/downloads/state.json")
+        try FileManager.default.createDirectory(at: stateURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: json).write(to: stateURL)
+    }
+
+    private func waitUntil(_ condition: () -> Bool) async {
+        for _ in 0..<200 where !condition() {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    @Test func transferFinishingBeforeAnyManifestStillInstalls() async throws {
+        let root = try scratchRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let staged = root.appendingPathComponent("staged.bin")
+        try Data("abc".utf8).write(to: staged)
+        let product = product(sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        try writeInFlightState(product, root: root)
+
+        // Relaunched for background session events: nothing has fetched a
+        // manifest, and the cached one (if any) predates this product.
+        let center = DownloadCenter(root: root, sessionIdentifier: "tests.\(UUID().uuidString)")
+        center.finishForTesting(productId: product.id, staged: staged)
+        await waitUntil { center.isInstalled(product.id) || center.phase(for: product.id).isFailure }
+
+        #expect(center.phase(for: product.id) == .installed)
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("FlightBag/cycles/2609/aero.sqlite").path))
+    }
+
+    @Test func lateProgressDoesNotRewindAFinishedProduct() throws {
+        let root = try scratchRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let center = DownloadCenter(root: root, sessionIdentifier: "tests.\(UUID().uuidString)")
+        let id = "2609/tiles/x.mbtiles"
+
+        for phase in [DownloadCenter.Phase.verifying, .installing, .installed, .paused, .failed("x")] {
+            center.setPhaseForTesting(phase, productId: id)
+            center.progressForTesting(productId: id, fraction: 1)
+            #expect(center.phase(for: id) == phase)
+        }
+        center.setPhaseForTesting(.queued, productId: id)
+        center.progressForTesting(productId: id, fraction: 0.5)
+        #expect(center.phase(for: id) == .downloading(0.5))
+    }
+}
+
+private extension Optional where Wrapped == DownloadCenter.Phase {
+    var isFailure: Bool {
+        if case .failed = self { return true }
+        return false
     }
 }
