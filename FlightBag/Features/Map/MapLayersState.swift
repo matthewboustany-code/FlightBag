@@ -5,7 +5,7 @@ import FBModels
 /// An aeronautical chart type the map can display — a *category*, not a
 /// source. Which service or file backs a kind is `ChartSource`'s job, carried
 /// in the manifest, so a new authority does not need an app release.
-enum ChartKind: String, CaseIterable, Identifiable, Sendable {
+nonisolated enum ChartKind: String, CaseIterable, Identifiable, Sendable {
     case vfrSectional = "vfr"
     case ifrLow = "ifrlow"
     case ifrHigh = "ifrhigh"

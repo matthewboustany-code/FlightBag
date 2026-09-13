@@ -235,8 +235,13 @@ struct MapHomeView: View {
         // deletes chart tiles, so the map switches to offline immediately.
         .task(id: environment.downloadCenter.chartsVersion) {
             let store = environment.chartStore
-            layers.availableCharts = store.availableCharts()
-            layers.availableBasemaps = store.availableBasemaps()
+            // Directory scans, sidecar reads, and sideload moves: keep them
+            // off the main actor, which was stalling the map as it appeared.
+            let (charts, basemaps) = await Task.detached(priority: .userInitiated) {
+                (store.availableCharts(), store.availableBasemaps())
+            }.value
+            layers.availableCharts = charts
+            layers.availableBasemaps = basemaps
             // Finding a chart's collar means reading a few dozen tiles, so a
             // new download draws unclipped for a second and then settles.
             // Basemaps are seamless and skip this.
@@ -244,7 +249,11 @@ struct MapHomeView: View {
             let analysed = await Task.detached(priority: .utility) {
                 ChartCoverageDetector.prepare(tileSets: tileSets)
             }.value
-            if analysed { layers.availableCharts = store.availableCharts() }
+            if analysed {
+                layers.availableCharts = await Task.detached(priority: .userInitiated) {
+                    store.availableCharts()
+                }.value
+            }
         }
         // Chart sources arrive with the manifest, so the map picks up a new
         // authority on the next fetch rather than the next app release.
