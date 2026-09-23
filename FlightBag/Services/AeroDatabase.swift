@@ -481,8 +481,12 @@ extension AeroDatabase {
     }
 
     /// Airways with at least one point in the box, each returned complete so
-    /// the polyline doesn't stop at the screen edge.
-    func airwaysIn(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double, limit: Int = 60) async throws -> [AirwayLine] {
+    /// the polyline doesn't stop at the screen edge. When the box holds more
+    /// than `limit`, the ones passing closest to its centre win. A bare
+    /// LIMIT would keep whichever the (location, lat, lon) index reaches
+    /// first — the southern edge of the view.
+    func airwaysIn(minLat: Double, maxLat: Double, minLon: Double, maxLon: Double, limit: Int = 80) async throws -> [AirwayLine] {
+        let centerLat = (minLat + maxLat) / 2, centerLon = (minLon + maxLon) / 2
         guard schemaVersion >= 2 else { return [] }
         return try await dbPool.read { db in
             let rows = try Row.fetchAll(
@@ -492,13 +496,15 @@ extension AeroDatabase {
                 FROM airway_point p
                 JOIN airway a ON a.id = p.airway_id AND a.location = p.location
                 WHERE p.location = 'C' AND p.lat IS NOT NULL AND p.airway_id IN (
-                    SELECT DISTINCT airway_id FROM airway_point
+                    SELECT airway_id FROM airway_point
                     WHERE location = 'C' AND lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?
+                    GROUP BY airway_id
+                    ORDER BY MIN(abs(lat - ?) + abs(lon - ?))
                     LIMIT ?
                 )
                 ORDER BY p.airway_id, p.seq
                 """,
-                arguments: [minLat, maxLat, minLon, maxLon, limit]
+                arguments: [minLat, maxLat, minLon, maxLon, centerLat, centerLon, limit]
             )
             var lines: [String: (designation: String?, points: [Coordinate])] = [:]
             var order: [String] = []

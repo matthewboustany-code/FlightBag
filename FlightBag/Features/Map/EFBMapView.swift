@@ -45,6 +45,7 @@ struct EFBMapView: UIViewRepresentable {
         map.register(AirportAnnotationView.self, forAnnotationViewWithReuseIdentifier: AirportAnnotationView.reuseId)
         map.register(OwnshipAnnotationView.self, forAnnotationViewWithReuseIdentifier: OwnshipAnnotationView.reuseId)
         map.register(WaypointAnnotationView.self, forAnnotationViewWithReuseIdentifier: WaypointAnnotationView.reuseId)
+        map.register(AirwayLabelAnnotationView.self, forAnnotationViewWithReuseIdentifier: AirwayLabelAnnotationView.reuseId)
         map.register(RouteWaypointAnnotationView.self, forAnnotationViewWithReuseIdentifier: RouteWaypointAnnotationView.reuseId)
         map.register(TrafficAnnotationView.self, forAnnotationViewWithReuseIdentifier: TrafficAnnotationView.reuseId)
         context.coordinator.map = map
@@ -155,7 +156,11 @@ struct EFBMapView: UIViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate {
         weak var map: MKMapView?
-        var aeroDatabase: AeroDatabase?
+        var aeroDatabase: AeroDatabase? {
+            // A cycle rollover swaps the database: refetch even though the
+            // view still sits inside the last fetched box.
+            didSet { if oldValue !== aeroDatabase { aeroQuery = nil } }
+        }
         var airspaceStore: AirspaceStore?
         var plateStore: PlateStore?
         var layersState: MapLayersState?
@@ -185,7 +190,8 @@ struct EFBMapView: UIViewRepresentable {
         private var waypointAnnotations: [String: WaypointAnnotation] = [:]
         private var airwayPolylines: [String: AirwayPolyline] = [:]
         private var airspaceOverlays: [String: AdvisoryPolygon] = [:]
-        private var aeroKey: String?
+        private var airwayLabels: [String: AirwayLabelAnnotation] = [:]
+        private var aeroQuery: AeroQuery?
         private var aeroTask: Task<Void, Never>?
         private var routePolyline: MKPolyline?
         private var routeKey: ActiveMapRoute?
@@ -326,30 +332,55 @@ struct EFBMapView: UIViewRepresentable {
 
         // MARK: Aeronautical vector layer
 
-        /// Waypoints, airways, and airspace for the current viewport,
-        /// re-queried when the region or toggles change. Density is gated by
-        /// zoom so a whole-country view never tries to draw 70k fixes.
+        /// A fetched region: the padded box the current aeronautical data
+        /// covers, the span it was gated at, and the layer toggles.
+        private struct AeroQuery: Equatable {
+            var toggles: String
+            var minLat, maxLat, minLon, maxLon: Double
+            var span: Double
+
+            func covers(_ other: AeroQuery) -> Bool {
+                toggles == other.toggles
+                    && other.minLat >= minLat && other.maxLat <= maxLat
+                    && other.minLon >= minLon && other.maxLon <= maxLon
+                    // Zooming changes the density gates and the thinning.
+                    && (0.7...1.4).contains(other.span / span)
+            }
+        }
+
+        /// Waypoints, airways, and airspace for the current viewport.
+        /// Density is gated by zoom so a whole-country view never tries to
+        /// draw 70k fixes.
+        ///
+        /// Runs on every `updateUIView` (1 Hz while traffic or ownship is
+        /// live) and every region change, so it must be cheap when nothing
+        /// needs fetching: data is fetched for a padded box, and small pans
+        /// or a follow-mode drift inside it cost only the containment check.
         func refreshAeronautical(on map: MKMapView) {
             guard let layers = layersState else { return }
             let region = map.region
-            let key = String(
-                format: "%.2f,%.2f,%.2f|%@%@%@|%@",
-                region.center.latitude, region.center.longitude, region.span.latitudeDelta,
+            let toggles = [
                 layers.waypointsEnabled ? "1" : "0",
                 layers.airwaysLowEnabled ? "1" : "0",
                 layers.airwaysHighEnabled ? "1" : "0",
-                layers.enabledAirspaceCategories.map(\.rawValue).sorted().joined()
-            )
-            guard key != aeroKey else { return }
-            aeroKey = key
-
+                layers.enabledAirspaceCategories.map(\.rawValue).sorted().joined(),
+            ].joined()
             let span = max(region.span.latitudeDelta, region.span.longitudeDelta)
-            let box = (
+            let visible = AeroQuery(
+                toggles: toggles,
                 minLat: region.center.latitude - region.span.latitudeDelta / 2,
                 maxLat: region.center.latitude + region.span.latitudeDelta / 2,
                 minLon: region.center.longitude - region.span.longitudeDelta / 2,
-                maxLon: region.center.longitude + region.span.longitudeDelta / 2
+                maxLon: region.center.longitude + region.span.longitudeDelta / 2,
+                span: span
             )
+            if let aeroQuery, aeroQuery.covers(visible) { return }
+            let padLat = region.span.latitudeDelta * Self.aeroPadding
+            let padLon = region.span.longitudeDelta * Self.aeroPadding
+            var padded = visible
+            padded.minLat -= padLat; padded.maxLat += padLat
+            padded.minLon -= padLon; padded.maxLon += padLon
+            aeroQuery = padded
 
             aeroTask?.cancel()
             aeroTask = Task { [weak self, weak map] in
@@ -361,15 +392,19 @@ struct EFBMapView: UIViewRepresentable {
 
                 var waypoints: [AeroDatabase.MapWaypoint] = []
                 if layers.waypointsEnabled, span < 5, let db {
-                    waypoints += (try? await db.navaidsIn(minLat: box.minLat, maxLat: box.maxLat, minLon: box.minLon, maxLon: box.maxLon)) ?? []
+                    // Fetch generously and thin evenly; a small LIMIT in SQL
+                    // returns only the southern edge of the box (index order).
+                    let navaids = (try? await db.navaidsIn(minLat: padded.minLat, maxLat: padded.maxLat, minLon: padded.minLon, maxLon: padded.maxLon, limit: 400)) ?? []
+                    waypoints += navaids.filter { !Self.hiddenNavaidTypes.contains($0.navaidType ?? "") }
                     if span < 1.6 {
-                        waypoints += (try? await db.fixesIn(minLat: box.minLat, maxLat: box.maxLat, minLon: box.minLon, maxLon: box.maxLon)) ?? []
+                        waypoints += (try? await db.fixesIn(minLat: padded.minLat, maxLat: padded.maxLat, minLon: padded.minLon, maxLon: padded.maxLon, limit: 2500)) ?? []
                     }
+                    waypoints = WaypointThinning.spread(waypoints, span: span, maxCount: Self.maxWaypoints)
                 }
 
                 var airways: [AeroDatabase.AirwayLine] = []
                 if (layers.airwaysLowEnabled || layers.airwaysHighEnabled), span < 6, let db {
-                    let all = (try? await db.airwaysIn(minLat: box.minLat, maxLat: box.maxLat, minLon: box.minLon, maxLon: box.maxLon)) ?? []
+                    let all = (try? await db.airwaysIn(minLat: padded.minLat, maxLat: padded.maxLat, minLon: padded.minLon, maxLon: padded.maxLon)) ?? []
                     airways = all.filter { $0.isHigh ? layers.airwaysHighEnabled : layers.airwaysLowEnabled }
                 }
 
@@ -378,53 +413,85 @@ struct EFBMapView: UIViewRepresentable {
                 if !layers.enabledAirspaceCategories.isEmpty, span < 8, let store = self.airspaceStore {
                     airspaces = await store.airspaces(
                         categories: layers.enabledAirspaceCategories,
-                        minLat: box.minLat, maxLat: box.maxLat, minLon: box.minLon, maxLon: box.maxLon
+                        minLat: padded.minLat, maxLat: padded.maxLat, minLon: padded.minLon, maxLon: padded.maxLon
                     )
                 }
 
                 guard !Task.isCancelled else { return }
-                self.apply(waypoints: waypoints, airways: airways, airspaces: airspaces, on: map)
+                self.apply(waypoints: waypoints, airways: airways, airspaces: airspaces, labelBox: visible, on: map)
             }
         }
 
-        private func apply(waypoints: [AeroDatabase.MapWaypoint], airways: [AeroDatabase.AirwayLine], airspaces: [Airspace]?, on map: MKMapView) {
+        /// Test signals and fan markers aren't navigated to; on the map they
+        /// only crowd out the VORs next to them.
+        private static let hiddenNavaidTypes: Set<String> = ["VOT", "FAN MARKER"]
+
+        /// Fraction of the span fetched beyond each edge of the view.
+        private static let aeroPadding = 0.2
+        /// Waypoint views for the padded box; MapKit collision thins the
+        /// on-screen ones further.
+        private static let maxWaypoints = 260
+
+        private func apply(
+            waypoints: [AeroDatabase.MapWaypoint],
+            airways: [AeroDatabase.AirwayLine],
+            airspaces: [Airspace]?,
+            labelBox: AeroQuery,
+            on map: MKMapView
+        ) {
             // Waypoints — delta by stable id ("ident-lat-lon"), so points
             // still in view carry over untouched.
             var keepWaypoints = Set<String>()
+            var addedWaypoints: [WaypointAnnotation] = []
             for waypoint in waypoints {
-                keepWaypoints.insert(waypoint.id)
-                if waypointAnnotations[waypoint.id] == nil {
+                let id = waypoint.id
+                keepWaypoints.insert(id)
+                if waypointAnnotations[id] == nil {
                     let annotation = WaypointAnnotation(waypoint: waypoint)
-                    waypointAnnotations[waypoint.id] = annotation
-                    map.addAnnotation(annotation)
+                    waypointAnnotations[id] = annotation
+                    addedWaypoints.append(annotation)
                 }
             }
-            let staleWaypoints = waypointAnnotations.filter { !keepWaypoints.contains($0.key) }
-            if !staleWaypoints.isEmpty {
-                map.removeAnnotations(Array(staleWaypoints.values))
-                for key in staleWaypoints.keys { waypointAnnotations[key] = nil }
-            }
+            removeStale(from: &waypointAnnotations, keeping: keepWaypoints) { map.removeAnnotations($0) }
+            if !addedWaypoints.isEmpty { map.addAnnotations(addedWaypoints) }
 
             // Airways — delta by ident; a route's geometry is fixed per ident,
-            // so a carried-over polyline is always current.
+            // so a carried-over polyline is always current. Labels move to
+            // the part of the line now on screen.
             var keepAirways = Set<String>()
+            var addedAirways: [AirwayPolyline] = []
+            var addedLabels: [AirwayLabelAnnotation] = []
             for line in airways {
                 keepAirways.insert(line.ident)
                 if airwayPolylines[line.ident] == nil {
                     let polyline = AirwayPolyline.make(line)
                     airwayPolylines[line.ident] = polyline
-                    map.addOverlay(polyline, level: .aboveLabels)
+                    addedAirways.append(polyline)
+                }
+                let anchor = AirwayLabelPlacement.anchor(
+                    for: line.coordinates,
+                    minLat: labelBox.minLat, maxLat: labelBox.maxLat,
+                    minLon: labelBox.minLon, maxLon: labelBox.maxLon
+                ).map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) }
+                if let anchor {
+                    if let label = airwayLabels[line.ident] {
+                        label.coordinate = anchor
+                    } else {
+                        let label = AirwayLabelAnnotation(ident: line.ident, isHigh: line.isHigh, coordinate: anchor)
+                        airwayLabels[line.ident] = label
+                        addedLabels.append(label)
+                    }
                 }
             }
-            let staleAirways = airwayPolylines.filter { !keepAirways.contains($0.key) }
-            if !staleAirways.isEmpty {
-                map.removeOverlays(Array(staleAirways.values))
-                for key in staleAirways.keys { airwayPolylines[key] = nil }
-            }
+            removeStale(from: &airwayPolylines, keeping: keepAirways) { map.removeOverlays($0) }
+            removeStale(from: &airwayLabels, keeping: keepAirways) { map.removeAnnotations($0) }
+            if !addedAirways.isEmpty { map.addOverlays(addedAirways, level: .aboveLabels) }
+            if !addedLabels.isEmpty { map.addAnnotations(addedLabels) }
 
             // Airspace — nil = fetch failed: keep the previous boundaries.
             if let airspaces {
                 var keepAirspace = Set<String>()
+                var added: [AdvisoryPolygon] = []
                 for airspace in airspaces {
                     for (ringIndex, ring) in airspace.polygons.enumerated() {
                         let key = "\(airspace.id)#\(ringIndex)"
@@ -432,16 +499,21 @@ struct EFBMapView: UIViewRepresentable {
                         if airspaceOverlays[key] == nil {
                             let polygon = AdvisoryPolygon.makeAirspace(ring: ring, airspace: airspace)
                             airspaceOverlays[key] = polygon
-                            map.addOverlay(polygon, level: .aboveLabels)
+                            added.append(polygon)
                         }
                     }
                 }
-                let staleAirspace = airspaceOverlays.filter { !keepAirspace.contains($0.key) }
-                if !staleAirspace.isEmpty {
-                    map.removeOverlays(Array(staleAirspace.values))
-                    for key in staleAirspace.keys { airspaceOverlays[key] = nil }
-                }
+                removeStale(from: &airspaceOverlays, keeping: keepAirspace) { map.removeOverlays($0) }
+                if !added.isEmpty { map.addOverlays(added, level: .aboveLabels) }
             }
+        }
+
+        /// Drops entries not in `keep`, handing the removed values to
+        /// `remove` in one batch (MapKit re-lays out once per call).
+        private func removeStale<Value>(from dict: inout [String: Value], keeping keep: Set<String>, remove: ([Value]) -> Void) {
+            let stale = dict.keys.filter { !keep.contains($0) }
+            guard !stale.isEmpty else { return }
+            remove(stale.compactMap { dict.removeValue(forKey: $0) })
         }
 
         // MARK: Advisories
@@ -679,25 +751,24 @@ struct EFBMapView: UIViewRepresentable {
                 return renderer
             }
             if let advisory = overlay as? AdvisoryPolygon {
-                let renderer = MKPolygonRenderer(polygon: advisory)
+                let renderer = CasedPolygonRenderer(polygon: advisory)
                 let (stroke, fillAlpha, dashed) = MainActor.assumeIsolated {
                     (advisory.strokeColor, advisory.fillAlpha, advisory.isDashed)
                 }
                 renderer.strokeColor = stroke
-                renderer.fillColor = stroke.withAlphaComponent(fillAlpha)
-                renderer.lineWidth = 2
+                renderer.fillColor = fillAlpha > 0 ? stroke.withAlphaComponent(fillAlpha) : nil
+                renderer.lineWidth = 2.5
                 if dashed {
-                    renderer.lineDashPattern = [6, 5]
+                    renderer.lineDashPattern = [8, 5]
                 }
                 return renderer
             }
             if let airway = overlay as? AirwayPolyline {
-                let renderer = MKPolylineRenderer(polyline: airway)
+                let renderer = CasedPolylineRenderer(polyline: airway)
                 let isHigh = MainActor.assumeIsolated { airway.isHigh }
-                renderer.strokeColor = isHigh
-                    ? UIColor.systemGray.withAlphaComponent(0.8)
-                    : UIColor.systemBlue.withAlphaComponent(0.55)
-                renderer.lineWidth = 1.5
+                renderer.strokeColor = isHigh ? AeroPalette.airwayHigh : AeroPalette.airwayLow
+                renderer.lineWidth = 2
+                renderer.casingWidth = 1.25
                 return renderer
             }
             if let procedure = overlay as? ProcedurePolyline {
@@ -898,6 +969,9 @@ struct EFBMapView: UIViewRepresentable {
                 if annotation is WaypointAnnotation {
                     return mapView.dequeueReusableAnnotationView(withIdentifier: WaypointAnnotationView.reuseId, for: annotation)
                 }
+                if annotation is AirwayLabelAnnotation {
+                    return mapView.dequeueReusableAnnotationView(withIdentifier: AirwayLabelAnnotationView.reuseId, for: annotation)
+                }
                 if annotation is RouteWaypointAnnotation {
                     return mapView.dequeueReusableAnnotationView(withIdentifier: RouteWaypointAnnotationView.reuseId, for: annotation)
                 }
@@ -951,9 +1025,12 @@ final class AirportAnnotation: NSObject, MKAnnotation {
 /// label too.
 final class AirportAnnotationView: MKAnnotationView {
     static let reuseId = "airport"
+    /// Deep indigo: `.systemIndigo` is close to the sectional's own airport
+    /// magenta/blue and vanished into it.
+    static let ink = UIColor(red: 0.25, green: 0.12, blue: 0.62, alpha: 1)
 
     private let symbolView = UIImageView()
-    private let label = UILabel()
+    private let label = MapTagLabel()
 
     override var annotation: MKAnnotation? {
         didSet { configure() }
@@ -975,15 +1052,14 @@ final class AirportAnnotationView: MKAnnotationView {
         symbolView.image = UIImage(
             systemName: tier == 0 ? "circle.circle.fill" : "circle.circle",
             withConfiguration: config
-        )?.withTintColor(.systemIndigo, renderingMode: .alwaysOriginal)
+        )?.withTintColor(Self.ink, renderingMode: .alwaysOriginal)
         symbolView.sizeToFit()
 
-        label.attributedText = MapLabelStyle.halo(
+        label.setTag(
             (annotation as? AirportAnnotation)?.airportId ?? "",
-            font: .systemFont(ofSize: 13, weight: .bold),
-            color: .systemIndigo
+            font: .systemFont(ofSize: tier == 0 ? 12 : 11, weight: .bold),
+            color: Self.ink
         )
-        label.sizeToFit()
 
         MapLabelStyle.layoutSymbolAboveLabel(in: self, symbol: symbolView, label: label)
         canShowCallout = false

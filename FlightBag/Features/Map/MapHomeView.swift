@@ -580,15 +580,28 @@ private struct LayersPanel: View {
             }
             Section {
                 Toggle("Airports", isOn: $layers.airportsEnabled)
-                Toggle("Waypoints (navaids & fixes)", isOn: $layers.waypointsEnabled)
-                Toggle("Airways — Victor/T (low)", isOn: $layers.airwaysLowEnabled)
-                Toggle("Airways — Jet/Q (high)", isOn: $layers.airwaysHighEnabled)
+                Toggle(isOn: $layers.waypointsEnabled) {
+                    HStack(spacing: 8) {
+                        Image(uiImage: WaypointSymbols.vor)
+                        Text("Waypoints (navaids & fixes)")
+                    }
+                }
+                Toggle(isOn: $layers.airwaysLowEnabled) {
+                    HStack(spacing: 8) {
+                        LineSwatch(color: AeroPalette.airwayLow)
+                        Text("Airways — Victor/T (low)")
+                    }
+                }
+                Toggle(isOn: $layers.airwaysHighEnabled) {
+                    HStack(spacing: 8) {
+                        LineSwatch(color: AeroPalette.airwayHigh)
+                        Text("Airways — Jet/Q (high)")
+                    }
+                }
                 ForEach(Airspace.Category.allCases, id: \.self) { category in
                     Toggle(isOn: airspaceBinding(category)) {
                         HStack(spacing: 8) {
-                            Circle()
-                                .fill(Color(category.strokeColor))
-                                .frame(width: 10, height: 10)
+                            LineSwatch(color: category.strokeColor, dashed: category.isDashed)
                             Text("\(category.displayName) airspace")
                         }
                     }
@@ -597,7 +610,10 @@ private struct LayersPanel: View {
                 Text("Aeronautical")
             } footer: {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Waypoints and airways come from the offline database; airspace boundaries stream from FAA services per view. Zoom in to reveal fixes.")
+                    Text("Shown as you zoom in: airspace within about 480 NM across, airways 360 NM, navaids 300 NM, fixes 100 NM. Waypoints and airways come from the offline database; airspace streams from FAA services.")
+                    if layers.chart != nil, layers.anyAeronauticalEnabled, layers.chartOpacity > 0.8 {
+                        Text("Tip: lower the chart opacity to make the overlay stand out.")
+                    }
                     if let error = environment.airspaceStore.lastError {
                         Text(error).foregroundStyle(.orange)
                     }
@@ -707,6 +723,25 @@ private struct LayersPanel: View {
                 }
             }
         }
+    }
+}
+
+/// Legend swatch drawn the way the map draws the line: white casing, then
+/// the color, dashed where the map dashes.
+private struct LineSwatch: View {
+    var color: UIColor
+    var dashed = false
+
+    var body: some View {
+        Canvas { context, size in
+            var path = Path()
+            path.move(to: CGPoint(x: 2, y: size.height / 2))
+            path.addLine(to: CGPoint(x: size.width - 2, y: size.height / 2))
+            context.stroke(path, with: .color(.white), style: StrokeStyle(lineWidth: 5, lineCap: .round))
+            context.stroke(path, with: .color(Color(color)), style: StrokeStyle(lineWidth: 2.5, dash: dashed ? [5, 3] : []))
+        }
+        .frame(width: 22, height: 10)
+        .accessibilityHidden(true)
     }
 }
 

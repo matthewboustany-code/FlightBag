@@ -13,6 +13,11 @@ final class AirspaceStore {
     private let provider: any AirspaceProviding
     private let internationalProvider: (any AirspaceProviding)?
     private var cache: [String: [Airspace]] = [:]
+    /// Insertion order for `cache`, oldest first. Bounded because a long
+    /// flight crosses a new grid box every few minutes, and each entry holds
+    /// thousands of boundary vertices.
+    private var cacheOrder: [String] = []
+    private static let cacheLimit = 32
 
     /// openAIP API key, if the user has supplied one. openAIP data is CC BY-NC
     /// and needs a key from their profile page, so worldwide airspace is
@@ -90,6 +95,10 @@ final class AirspaceStore {
                 minLat: box.minLat, minLon: box.minLon, maxLat: box.maxLat, maxLon: box.maxLon
             )
             cache[key] = result
+            cacheOrder.append(key)
+            if cacheOrder.count > Self.cacheLimit {
+                cache[cacheOrder.removeFirst()] = nil
+            }
             lastError = nil
             return result
         } catch {
