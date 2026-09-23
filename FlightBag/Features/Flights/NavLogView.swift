@@ -87,21 +87,21 @@ struct NavLogView: View {
 
         // Winds: FB stations are mostly VORs, so their coordinates resolve
         // straight out of the navaid table. Failure just means calm-air times.
+        // Variation drifts year to year, so the navlog is computed for the
+        // planned departure rather than for whenever the view happened to open.
+        let plannedDeparture = FlightPlanCodec.decode(flight.flightPlanData)?.departureTime
+        let forecastHours = WindsAloftForecast.period(forDeparture: plannedDeparture)
         var located: [(Coordinate, WindsAloftStation)] = []
-        if let db = environment.aeroDatabase,
-           let stations = try? await AviationWeatherGovProvider().windsAloft(forecastHours: 6) {
-            for station in stations {
-                if let waypoint = try? await db.resolveWaypoint(identifier: station.identifier) {
-                    located.append((waypoint.coordinate, station))
-                }
+        if let db = environment.aeroDatabase {
+            located = await environment.windsAloftStore.stations(forecastHours: forecastHours) { identifier in
+                try? await db.resolveWaypoint(identifier: identifier)?.coordinate
             }
+            .map { ($0.coordinate, $0.station) }
         }
         let altitude = Self.cruiseAltitudeFeet(from: flight.flightPlanData) ?? 6000
         windsApplied = !located.isEmpty
 
-        // Variation drifts year to year, so the navlog is computed for the
-        // planned departure rather than for whenever the view happened to open.
-        let departureDate = FlightPlanCodec.decode(flight.flightPlanData)?.departureTime ?? Date()
+        let departureDate = plannedDeparture ?? Date()
 
         navLog = NavLogBuilder.build(
             route: parsedRoute,

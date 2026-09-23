@@ -120,7 +120,7 @@ enum PlateGeoreferenceResolver {
             }
         }
 
-        private let queue = DispatchQueue(label: "Me.FlightBag.georef-cache")
+        private let queue = DispatchQueue(label: "com.mbandhb.flightbag.georef-cache")
         private var entries: [String: Entry]
         private let fileURL: URL = {
             let support = (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))

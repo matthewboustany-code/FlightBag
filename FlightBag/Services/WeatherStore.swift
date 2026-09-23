@@ -31,6 +31,8 @@ actor WeatherStore {
         var source: Source?
     }
 
+    static let freshFor: TimeInterval = 60
+
     private let provider: any WeatherProvider
     private var cache: [String: StationWeather] = [:]
     private let cacheURL: URL
@@ -42,13 +44,20 @@ actor WeatherStore {
         cacheURL = support.appendingPathComponent("FlightBag/weather-cache.json")
         if let data = try? Data(contentsOf: cacheURL),
            let stored = try? JSONDecoder().decode([String: StationWeather].self, from: data) {
-            cache = stored
+            // Pruned at load; the next persist writes the trimmed file.
+            cache = StationCachePruning.pruned(stored, fetchedAt: \.fetchedAt)
         }
     }
 
     /// Live weather when reachable; otherwise the cached copy. `isStale` is
     /// true when the returned data came from cache.
-    func weather(for station: ICAOIdentifier) async -> (weather: StationWeather?, isStale: Bool) {
+    func weather(for station: ICAOIdentifier, now: Date = Date()) async -> (weather: StationWeather?, isStale: Bool) {
+        // Every section appearance and FIS-B bump asked again; METARs change
+        // hourly, so an internet fetch under a minute old is still the answer.
+        if let entry = cache[station.rawValue], entry.source == .internet,
+           now.timeIntervalSince(entry.fetchedAt) < Self.freshFor {
+            return (entry, false)
+        }
         do {
             async let metar = provider.metar(for: station)
             async let taf = provider.taf(for: station)

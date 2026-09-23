@@ -66,8 +66,12 @@ final class CompositePositionSource: PositionSource {
         self.fallback = fallback
     }
 
+    /// Fixed ownship for screenshot automation (`-adsbDemoSeed YES`), which
+    /// has neither a receiver nor a location fix. Wins when set.
+    var demoPosition: OwnshipPosition?
+
     var position: OwnshipPosition? {
-        primary.isCurrent ? primary.position : fallback.position
+        demoPosition ?? (primary.isCurrent ? primary.position : fallback.position)
     }
 
     /// Denied only when it actually matters: CoreLocation refused and

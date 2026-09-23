@@ -52,6 +52,13 @@ import FBFISB
         #expect(first.text == "RWY 18L CLSD")
     }
 
+    @Test func synthesisedIdIsTheSameInEveryProcess() throws {
+        // Two calls in one process always agreed, even with `hashValue`; the
+        // bug was a different seed next launch. Pin the digest itself.
+        let notam = try #require(report("NOTAM-D KAUS RWY 18L CLSD").toNotam())
+        #expect(notam.id == "NOTAM-D-0df3bc20ac9d")
+    }
+
     @Test func rejectsNonNotamAndBodylessRecords() {
         #expect(report("METAR KAUS 151953Z 17010KT").toNotam() == nil)
         #expect(report("NOTAM-D KAUS").toNotam() == nil)
@@ -128,6 +135,38 @@ import FBFISB
         #expect(stored?.qCode == "QMXLC")
     }
 
+    @Test func serverNotamSurvivesRepeatedUplinksOfTheSameNumber() async throws {
+        let store = await emptyStore()
+        let detailed = Notam(
+            id: "01/005",
+            location: ICAOIdentifier("KAUS"),
+            text: "TWY A CLSD",
+            qCode: "QMXLC"
+        )
+        await store.seedForTesting("KAUS", notams: [detailed], source: .server,
+                                   fetchedAt: Date().addingTimeInterval(-60))
+        let record = FISBTextReport.parse(record: "NOTAM-D KAUS 01/005 TWY A CLSD")
+        // The first merge used to flip the station to FIS-B, which let the
+        // second one overwrite the server copy.
+        await store.ingestFISB(reports: [record], receivedAt: Date())
+        await store.ingestFISB(reports: [record], receivedAt: Date().addingTimeInterval(1))
+
+        #expect(await store.cachedForTesting("KAUS")?.notams.first?.qCode == "QMXLC")
+    }
+
+    @Test func sameUplinkInTwoStoresYieldsOneId() async throws {
+        let record = FISBTextReport.parse(record: "NOTAM-D KAUS RWY 18L CLSD")
+        let first = await emptyStore()
+        await first.ingestFISB(reports: [record])
+        let firstId = await first.cachedForTesting("KAUS")?.notams.first?.id
+
+        // A second store reloads the first one's disk cache, as a relaunch does.
+        let second = NotamStore()
+        await second.ingestFISB(reports: [record], receivedAt: Date().addingTimeInterval(1))
+        let ids = await second.cachedForTesting("KAUS")?.notams.map(\.id)
+        #expect(ids == [firstId].compactMap { $0 })
+    }
+
     @Test func noServerConfiguredIsReportedDistinctlyFromEmpty() async throws {
         let store = await emptyStore()
         let previous = UserDefaults.standard.string(forKey: ServerConfig.defaultsKey)
@@ -144,7 +183,9 @@ import FBFISB
         await store.seedForTesting(
             "KAUS",
             notams: [Notam(id: "01/005", location: ICAOIdentifier("KAUS"), text: "TWY A CLSD")],
-            source: .server
+            source: .server,
+            // Older than the freshness window, so the store does ask.
+            fetchedAt: Date().addingTimeInterval(-NotamStore.freshFor - 60)
         )
         let previous = UserDefaults.standard.string(forKey: ServerConfig.defaultsKey)
         // Port 1 refuses connections immediately.
@@ -160,6 +201,28 @@ import FBFISB
         // "nothing is wrong at KAUS".
         #expect(result.notams.count == 1)
         #expect(result.isStale)
+    }
+
+    @Test func recentServerAnswerIsServedWithoutARoundTrip() async throws {
+        let store = await emptyStore()
+        await store.seedForTesting(
+            "KAUS",
+            notams: [Notam(id: "01/005", location: ICAOIdentifier("KAUS"), text: "TWY A CLSD")],
+            source: .server,
+            fetchedAt: Date().addingTimeInterval(-60)
+        )
+        let previous = UserDefaults.standard.string(forKey: ServerConfig.defaultsKey)
+        // Unreachable: if the store asked, the answer would be `.unreachable`.
+        UserDefaults.standard.set("http://127.0.0.1:1", forKey: ServerConfig.defaultsKey)
+        defer {
+            if let previous { UserDefaults.standard.set(previous, forKey: ServerConfig.defaultsKey) }
+            else { UserDefaults.standard.removeObject(forKey: ServerConfig.defaultsKey) }
+        }
+
+        let result = await store.notams(for: ICAOIdentifier("KAUS"))
+        #expect(result.availability == .available)
+        #expect(!result.isStale)
+        #expect(result.notams.count == 1)
     }
 
     @Test func briefingKeepsRouteOrderAndCollapsesRepeats() async throws {

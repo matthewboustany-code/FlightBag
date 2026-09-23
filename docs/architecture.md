@@ -45,6 +45,19 @@ All chart/plate/database artifacts are versioned by 28-day AIRAC cycle
 cycle ~20 days early, so the app downloads ahead and swaps atomically at the
 effective instant. UI shows freshness badges everywhere.
 
+On the device that is `DownloadCenter.applyAutomaticUpdates`, run after every
+manifest refresh (the app refreshes on each return to the foreground) unless
+Settings → "Update charts automatically" is off. A region recorded against an
+older cycle re-queues its kinds from the current manifest; within 7 days of
+the next cycle, `nextCycleProducts` for the same regions are queued too.
+Automatic transfers never use expensive (cellular/hotspot) networks. The
+"atomic swap" is a read rule, not a file move: each cycle installs into its
+own `cycles/{cycle}/` directory, and both `ChartStore` and
+`AeroDatabase.newestInstalledCycle` ignore cycles not yet effective. At the
+boundary `DownloadCenter.noteCycleFlip` bumps `chartsVersion` and
+`databaseVersion`, the map rescans, and `AppEnvironment.reloadAeroDatabase`
+reopens the database without a relaunch.
+
 ## Long-lead external dependencies (start early!)
 
 1. **Leidos LMFS vendor onboarding** — send the inquiry email

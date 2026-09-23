@@ -5,7 +5,7 @@ import FBModels
 /// An aeronautical chart type the map can display — a *category*, not a
 /// source. Which service or file backs a kind is `ChartSource`'s job, carried
 /// in the manifest, so a new authority does not need an app release.
-enum ChartKind: String, CaseIterable, Identifiable, Sendable {
+nonisolated enum ChartKind: String, CaseIterable, Identifiable, Sendable, Codable {
     case vfrSectional = "vfr"
     case ifrLow = "ifrlow"
     case ifrHigh = "ifrhigh"
@@ -55,7 +55,7 @@ enum ChartKind: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-enum RadarSource: String, CaseIterable, Identifiable, Sendable {
+nonisolated enum RadarSource: String, CaseIterable, Identifiable, Sendable, Codable {
     case internet
     case adsb
 
@@ -151,6 +151,15 @@ final class MapLayersState {
     /// descriptors — the map still streams on a cold first launch.
     var chartSources: [ChartSource] = []
 
+    /// Who the selected chart streams from ("FAA", "open flightmaps"), or nil
+    /// when nothing streams it — the status strip must not claim a service
+    /// that isn't being used.
+    var streamingAuthorityName: String? {
+        guard let chart else { return nil }
+        return ChartSource.streamingSource(for: chart.contentKind, manifestSources: chartSources)?
+            .authority.displayName
+    }
+
     /// Attribution for whatever is on screen, deduplicated.
     ///
     /// Not decoration: the OFMA licence and CC BY-NC both require the source
@@ -176,5 +185,103 @@ final class MapLayersState {
 
         var seen = Set<String>()
         return credits.filter { seen.insert($0).inserted }
+    }
+}
+
+// MARK: - Persistence
+
+extension MapLayersState {
+    static let defaultsKey = "mapLayers"
+
+    /// The user-set fields, as saved between launches. Deliberately excludes
+    /// what is discovered at runtime (available charts, basemaps, manifest
+    /// sources). Every field is optional so a snapshot from an older build,
+    /// missing whatever was added since, still loads.
+    struct Snapshot: Codable, Equatable {
+        /// A `ChartKind` raw value, or "none" for the base map alone. Not
+        /// `ChartKind??`: JSON can't tell "no chart" from "not saved".
+        var chart: String?
+        var chartOpacity: Double?
+        var plateOpacity: Double?
+        var radarEnabled: Bool?
+        var radarOpacity: Double?
+        var radarSource: RadarSource?
+        var airportsEnabled: Bool?
+        var trafficEnabled: Bool?
+        var waypointsEnabled: Bool?
+        var airwaysLowEnabled: Bool?
+        var airwaysHighEnabled: Bool?
+        var enabledAirspaceCategories: Set<Airspace.Category>?
+        var tfrsEnabled: Bool?
+        var sigmetsEnabled: Bool?
+        var airmetSierraEnabled: Bool?
+        var airmetTangoEnabled: Bool?
+        var airmetZuluEnabled: Bool?
+        var notamsEnabled: Bool?
+        var advisoryAltitudeFilterEnabled: Bool?
+        var advisoryFilterAltitudeFt: Double?
+        var basemapEnabled: Bool?
+        var streamChartGaps: Bool?
+    }
+
+    var snapshot: Snapshot {
+        Snapshot(
+            chart: chart?.rawValue ?? "none", chartOpacity: chartOpacity, plateOpacity: plateOpacity,
+            radarEnabled: radarEnabled, radarOpacity: radarOpacity, radarSource: radarSource,
+            airportsEnabled: airportsEnabled, trafficEnabled: trafficEnabled,
+            waypointsEnabled: waypointsEnabled, airwaysLowEnabled: airwaysLowEnabled,
+            airwaysHighEnabled: airwaysHighEnabled, enabledAirspaceCategories: enabledAirspaceCategories,
+            tfrsEnabled: tfrsEnabled, sigmetsEnabled: sigmetsEnabled, airmetSierraEnabled: airmetSierraEnabled,
+            airmetTangoEnabled: airmetTangoEnabled, airmetZuluEnabled: airmetZuluEnabled,
+            notamsEnabled: notamsEnabled, advisoryAltitudeFilterEnabled: advisoryAltitudeFilterEnabled,
+            advisoryFilterAltitudeFt: advisoryFilterAltitudeFt, basemapEnabled: basemapEnabled,
+            streamChartGaps: streamChartGaps
+        )
+    }
+
+    func apply(_ snapshot: Snapshot) {
+        if let raw = snapshot.chart { chart = ChartKind(rawValue: raw) }
+        chartOpacity = snapshot.chartOpacity ?? chartOpacity
+        plateOpacity = snapshot.plateOpacity ?? plateOpacity
+        radarEnabled = snapshot.radarEnabled ?? radarEnabled
+        radarOpacity = snapshot.radarOpacity ?? radarOpacity
+        radarSource = snapshot.radarSource ?? radarSource
+        airportsEnabled = snapshot.airportsEnabled ?? airportsEnabled
+        trafficEnabled = snapshot.trafficEnabled ?? trafficEnabled
+        waypointsEnabled = snapshot.waypointsEnabled ?? waypointsEnabled
+        airwaysLowEnabled = snapshot.airwaysLowEnabled ?? airwaysLowEnabled
+        airwaysHighEnabled = snapshot.airwaysHighEnabled ?? airwaysHighEnabled
+        enabledAirspaceCategories = snapshot.enabledAirspaceCategories ?? enabledAirspaceCategories
+        tfrsEnabled = snapshot.tfrsEnabled ?? tfrsEnabled
+        sigmetsEnabled = snapshot.sigmetsEnabled ?? sigmetsEnabled
+        airmetSierraEnabled = snapshot.airmetSierraEnabled ?? airmetSierraEnabled
+        airmetTangoEnabled = snapshot.airmetTangoEnabled ?? airmetTangoEnabled
+        airmetZuluEnabled = snapshot.airmetZuluEnabled ?? airmetZuluEnabled
+        notamsEnabled = snapshot.notamsEnabled ?? notamsEnabled
+        advisoryAltitudeFilterEnabled = snapshot.advisoryAltitudeFilterEnabled ?? advisoryAltitudeFilterEnabled
+        advisoryFilterAltitudeFt = snapshot.advisoryFilterAltitudeFt ?? advisoryFilterAltitudeFt
+        basemapEnabled = snapshot.basemapEnabled ?? basemapEnabled
+        streamChartGaps = snapshot.streamChartGaps ?? streamChartGaps
+    }
+
+    /// Restores the last saved layer state, if any.
+    func load(from defaults: UserDefaults = .standard) {
+        guard let data = defaults.data(forKey: Self.defaultsKey),
+              let snapshot = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
+        apply(snapshot)
+    }
+
+    func save(to defaults: UserDefaults = .standard) {
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        defaults.set(data, forKey: Self.defaultsKey)
+    }
+
+    static let followDefaultsKey = "mapFollowOwnship"
+    static let trackUpDefaultsKey = "mapTrackUp"
+
+    /// True when screenshot automation is driving the map. Its launch
+    /// arguments set layers for one run and must not become the saved state.
+    static var isDemoLaunch: Bool {
+        ProcessInfo.processInfo.arguments.contains { $0.hasPrefix("-mapDemo") }
     }
 }

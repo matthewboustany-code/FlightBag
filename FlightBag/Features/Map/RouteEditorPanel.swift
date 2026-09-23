@@ -28,7 +28,7 @@ final class RouteWaypointAnnotationView: MKAnnotationView {
     static let reuseId = "routeWaypoint"
 
     private let symbolView = UIImageView()
-    private let label = UILabel()
+    private let label = MapTagLabel()
 
     override var annotation: MKAnnotation? {
         didSet { configure() }
@@ -53,12 +53,11 @@ final class RouteWaypointAnnotationView: MKAnnotationView {
         )?.withTintColor(annotation.tint, renderingMode: .alwaysOriginal)
         symbolView.sizeToFit()
 
-        label.attributedText = MapLabelStyle.halo(
+        label.setTag(
             annotation.point.identifier,
             font: .systemFont(ofSize: 13, weight: .bold),
             color: annotation.tint
         )
-        label.sizeToFit()
 
         MapLabelStyle.layoutSymbolAboveLabel(in: self, symbol: symbolView, label: label)
         displayPriority = .required

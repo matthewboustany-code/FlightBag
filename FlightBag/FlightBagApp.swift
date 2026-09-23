@@ -44,6 +44,20 @@ struct FlightBagApp: App {
                     default:
                         if adsbEnabled { environment.gdl90Receiver.start() }
                     }
+                    // Coming to the foreground is when a cycle has most
+                    // likely rolled over, so check for updates then. Demo
+                    // seeding owns the manifest and must not be overwritten.
+                    if phase == .active, ServerConfig.baseURL != nil,
+                       !UserDefaults.standard.bool(forKey: "downloadsDemoSeed") {
+                        Task { await environment.downloadCenter.refreshManifest() }
+                    } else if phase == .active {
+                        environment.downloadCenter.noteCycleFlip()
+                    }
+                }
+                .task(id: environment.downloadCenter.databaseVersion) {
+                    // 0 is launch, where AppEnvironment has just opened it.
+                    guard environment.downloadCenter.databaseVersion > 0 else { return }
+                    environment.reloadAeroDatabase()
                 }
                 .onChange(of: adsbEnabled) { _, enabled in
                     if enabled && scenePhase != .background {

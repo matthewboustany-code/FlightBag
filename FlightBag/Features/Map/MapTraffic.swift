@@ -15,6 +15,11 @@ final class TrafficAnnotation: NSObject, MKAnnotation {
     var verticalTrend: VerticalTrend = .level
     var isAirborne = true
     var isAlerted = false
+    /// The target the proximity banner is calling out.
+    private(set) var isProximityThreat = false
+    /// Bumped by `update(from:)` only when something the data block or symbol
+    /// draws changed, so views skip redrawing identical reports.
+    private(set) var reportVersion = 0
 
     enum VerticalTrend { case climbing, descending, level }
 
@@ -32,6 +37,8 @@ final class TrafficAnnotationView: MKAnnotationView {
 
     private let label = UILabel()
     private let symbolView = UIImageView()
+    /// The annotation `reportVersion` this view last drew.
+    private var drawnVersion = -1
 
     override var annotation: MKAnnotation? {
         didSet { configure() }
@@ -56,9 +63,21 @@ final class TrafficAnnotationView: MKAnnotationView {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    /// Redraws only when the annotation's report changed since the last draw.
+    /// Reassigning `annotation` instead reconfigured every traffic view on
+    /// every map update, whatever triggered it.
+    func refreshIfNeeded() {
+        guard let traffic = annotation as? TrafficAnnotation, traffic.reportVersion != drawnVersion else { return }
+        configure()
+    }
+
     private func configure() {
         guard let traffic = annotation as? TrafficAnnotation else { return }
+        drawnVersion = traffic.reportVersion
+        // Red: the receiver's alert. Yellow: the proximity banner's target,
+        // so the banner and the chevron it means can be matched at a glance.
         let tint: UIColor = traffic.isAlerted ? .systemRed
+            : traffic.isProximityThreat ? .systemYellow
             : traffic.isAirborne ? .systemOrange : .systemGray
         let symbol = traffic.isAirborne ? "arrowtriangle.up.fill" : "square.fill"
         let config = UIImage.SymbolConfiguration(pointSize: 15, weight: .black)
@@ -107,22 +126,37 @@ final class TrafficAnnotationView: MKAnnotationView {
 extension TrafficAnnotation {
     /// Update mutable fields from a fresh report; `ownshipAltitude` drives
     /// the relative-altitude data block.
+    func setProximityThreat(_ threat: Bool) {
+        guard threat != isProximityThreat else { return }
+        isProximityThreat = threat
+        reportVersion += 1
+    }
+
     func update(from report: GDL90Message.TrafficReport, ownshipAltitudeFt: Int?) {
         coordinate = CLLocationCoordinate2D(latitude: report.latitude, longitude: report.longitude)
+        // Track is applied by rotation, not by a redraw.
         trackDegrees = report.trackDegrees
+
+        let relative: Int? = if let altitude = report.altitudeFeet, let ownship = ownshipAltitudeFt {
+            altitude - ownship
+        } else {
+            nil
+        }
+        let trend: VerticalTrend = switch report.verticalVelocityFpm {
+        case let fpm? where fpm >= 500: .climbing
+        case let fpm? where fpm <= -500: .descending
+        default: .level
+        }
+        let changed = callsign != report.callsign || altitudeFt != report.altitudeFeet
+            || isAirborne != report.airborne || isAlerted != report.alert
+            || relativeAltitudeFt != relative || verticalTrend != trend
+        guard changed else { return }
         callsign = report.callsign
         altitudeFt = report.altitudeFeet
         isAirborne = report.airborne
         isAlerted = report.alert
-        if let altitude = report.altitudeFeet, let ownship = ownshipAltitudeFt {
-            relativeAltitudeFt = altitude - ownship
-        } else {
-            relativeAltitudeFt = nil
-        }
-        switch report.verticalVelocityFpm {
-        case let fpm? where fpm >= 500: verticalTrend = .climbing
-        case let fpm? where fpm <= -500: verticalTrend = .descending
-        default: verticalTrend = .level
-        }
+        relativeAltitudeFt = relative
+        verticalTrend = trend
+        reportVersion += 1
     }
 }

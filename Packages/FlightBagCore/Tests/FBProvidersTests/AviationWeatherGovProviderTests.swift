@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import Testing
 import FBModels
 @testable import FBProviders
@@ -80,5 +83,50 @@ struct FixtureHTTPClient: HTTPGetting {
         // 36 encodes 360°.
         #expect(FBWindsParser.parseGroup("3610")?.fromDegrees == 360)
         #expect(FBWindsParser.parseGroup("") == nil)
+    }
+}
+
+/// Fails every request whose URL contains `failingRegion`.
+private struct OneRegionDown: HTTPGetting {
+    let failingRegion: String?
+    let body: Data
+
+    func get(_ url: URL) async throws -> Data {
+        if let failingRegion, url.absoluteString.contains("region=\(failingRegion)") {
+            throw URLError(.badServerResponse)
+        }
+        return body
+    }
+}
+
+private struct AllRegionsDown: HTTPGetting {
+    func get(_ url: URL) async throws -> Data { throw URLError(.badServerResponse) }
+}
+
+@Suite struct WindsAloftResilienceTests {
+    private let fb = Data("""
+    FT  3000    6000    9000   12000   18000   24000  30000  34000  39000
+    ABI      9900+17 3208+12 3111+07 3506-06 2913-16 341730 011739 032349
+    """.utf8)
+
+    @Test func oneFailingRegionKeepsTheOthers() async throws {
+        let provider = AviationWeatherGovProvider(http: OneRegionDown(failingRegion: "dfw", body: fb))
+        let stations = try await provider.windsAloft(forecastHours: 6)
+        #expect(stations.map(\.identifier) == ["ABI"])
+    }
+
+    @Test func everyRegionFailingThrows() async {
+        let provider = AviationWeatherGovProvider(http: AllRegionsDown())
+        await #expect(throws: (any Error).self) {
+            try await provider.windsAloft(forecastHours: 6)
+        }
+    }
+
+    @Test func forecastPeriodFollowsTheDeparture() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        #expect(WindsAloftForecast.period(forDeparture: nil, now: now) == 6)
+        #expect(WindsAloftForecast.period(forDeparture: now.addingTimeInterval(3_600), now: now) == 6)
+        #expect(WindsAloftForecast.period(forDeparture: now.addingTimeInterval(3_600 * 14), now: now) == 12)
+        #expect(WindsAloftForecast.period(forDeparture: now.addingTimeInterval(3_600 * 30), now: now) == 24)
     }
 }

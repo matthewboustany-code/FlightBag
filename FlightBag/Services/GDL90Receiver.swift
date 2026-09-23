@@ -94,7 +94,9 @@ final class GDL90Receiver {
         guard listener != nil else { return }
         lastMessageAt = Date()
         messagesThisSecond += events.count
-        state = .receiving
+        // @Observable notifies on every assignment, equal or not; assigning
+        // per datagram re-rendered Settings and the status strip at that rate.
+        if state != .receiving { state = .receiving }
         for event in events {
             switch event {
             case .message(.heartbeat(let heartbeat)):
@@ -134,6 +136,11 @@ final class GDL90UDPListener: @unchecked Sendable {
     private let onEvents: @Sendable ([GDL90Event]) -> Void
     private let onFailure: @Sendable (String) -> Void
     private var listener: NWListener?
+    /// Accepted per-endpoint connections, touched only on `queue`.
+    /// `NWListener.cancel()` does not cancel these: each would keep its socket
+    /// and go on swallowing that sender's datagrams after `stop()`, which is
+    /// how a stopped (or zombie) listener ate gdl90sim's traffic.
+    private var connections: [NWConnection] = []
 
     init(
         port: UInt16,
@@ -165,6 +172,16 @@ final class GDL90UDPListener: @unchecked Sendable {
         }
         listener.newConnectionHandler = { [weak self] connection in
             guard let self else { return }
+            self.connections.append(connection)
+            connection.stateUpdateHandler = { [weak self, weak connection] state in
+                switch state {
+                case .failed, .cancelled:
+                    guard let self, let connection else { return }
+                    self.connections.removeAll { $0 === connection }
+                default:
+                    break
+                }
+            }
             connection.start(queue: self.queue)
             self.receive(on: connection, deframer: GDL90Deframer())
         }
@@ -175,6 +192,8 @@ final class GDL90UDPListener: @unchecked Sendable {
         queue.async { [self] in
             listener?.cancel()
             listener = nil
+            for connection in connections { connection.cancel() }
+            connections.removeAll()
         }
     }
 

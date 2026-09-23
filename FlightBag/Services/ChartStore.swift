@@ -5,7 +5,9 @@ import FBModels
 /// `Application Support/FlightBag/cycles/{cycle}/tiles/*.mbtiles`.
 /// Also imports any .mbtiles dropped in Documents (Files-app sideload) into
 /// the current cycle, until CDN-backed region downloads arrive.
-struct ChartStore: Sendable {
+/// Nonisolated throughout: every method here is file IO (and discovery moves
+/// sideloaded files), so callers run it off the main actor.
+nonisolated struct ChartStore: Sendable {
     struct ChartSet: Identifiable, Sendable, Hashable {
         var id: String { url.path }
         var name: String
@@ -72,11 +74,14 @@ struct ChartStore: Sendable {
         return authority == .unknown ? nil : authority
     }
 
-    private func scanTileSets(matching include: (String) -> Bool) -> [ChartSet] {
+    private func scanTileSets(matching include: (String) -> Bool, now: Date = Date()) -> [ChartSet] {
         let fileManager = FileManager.default
         guard let cycles = try? fileManager.contentsOfDirectory(atPath: cyclesRoot.path) else { return [] }
         var sets: [ChartSet] = []
-        for cycle in cycles.sorted().reversed() {
+        // Newest effective cycle first. A cycle downloaded ahead of its
+        // effective date waits: flying next month's chart today is wrong.
+        let effective = cycles.compactMap(DataCycle.init(id:)).filter { $0.effectiveDate <= now }.sorted(by: >)
+        for cycle in effective.map(\.id) {
             let tilesDir = cyclesRoot.appendingPathComponent("\(cycle)/tiles")
             guard let files = try? fileManager.contentsOfDirectory(atPath: tilesDir.path) else { continue }
             for file in files where file.hasSuffix(".mbtiles") && include(file) {
@@ -98,7 +103,7 @@ struct ChartStore: Sendable {
     }
 
     /// Total chart-tile bytes across all cycles (Downloads tab display).
-    nonisolated func storedByteCount() -> Int64 {
+    func storedByteCount() -> Int64 {
         guard let cycles = try? FileManager.default.contentsOfDirectory(atPath: cyclesRoot.path) else { return 0 }
         var total: Int64 = 0
         for cycle in cycles {

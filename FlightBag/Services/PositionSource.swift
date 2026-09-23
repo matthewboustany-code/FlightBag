@@ -49,6 +49,10 @@ final class CoreLocationPositionSource: NSObject, PositionSource, CLLocationMana
         started = true
         manager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
         manager.activityType = .airborne
+        // A moving map must never freeze because iOS guessed the device was
+        // stationary; the default (true) lets it pause updates for .airborne.
+        manager.pausesLocationUpdatesAutomatically = false
+        manager.distanceFilter = kCLDistanceFilterNone
         manager.startUpdatingLocation()
     }
 

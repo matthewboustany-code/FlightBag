@@ -12,14 +12,14 @@ import FBModels
         let source = TilePipeline.Source.sectional(chart: "San_Antonio")
         #expect(source.remoteURL(for: cycle).absoluteString == "https://aeronav.faa.gov/visual/07-09-2026/sectional-files/San_Antonio.zip")
         #expect(source.artifactFileName == "San_Antonio_sectional.mbtiles")
-        #expect(!source.isEnroute)
+        #expect(source.isFiftySixDayEdition)  // sectionals are 56-day too (7b50897)
     }
 
     @Test func enrouteURLsAndNaming() {
         let low = TilePipeline.Source.enrouteLow(panel: 1)
         #expect(low.remoteURL(for: cycle).absoluteString == "https://aeronav.faa.gov/enroute/07-09-2026/enr_l01.zip")
         #expect(low.artifactFileName == "ENR_L01_ifr_low.mbtiles")
-        #expect(low.isEnroute)
+        #expect(low.isFiftySixDayEdition)
 
         let high = TilePipeline.Source.enrouteHigh(panel: 12)
         #expect(high.remoteURL(for: cycle).absoluteString == "https://aeronav.faa.gov/enroute/07-09-2026/enr_h12.zip")
@@ -30,8 +30,7 @@ import FBModels
         let basemap = TilePipeline.Source.naturalEarthBasemap
         #expect(basemap.artifactFileName == "basemap_natural_earth.mbtiles")
         #expect(basemap.artifactFileName.hasPrefix("basemap"))  // ManifestBuilder + app classify by this prefix
-        #expect(!basemap.isEnroute)
-        #expect(!basemap.needsPaletteExpansion)  // NE2 is RGB, not paletted
+        #expect(!basemap.isFiftySixDayEdition)
         #expect(basemap.remoteURL(for: cycle).absoluteString == "https://naciscdn.org/naturalearth/10m/raster/NE2_HR_LC_SR_W.zip")
     }
 

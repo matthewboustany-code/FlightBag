@@ -28,15 +28,21 @@ final class DownloadService: NSObject, URLSessionDownloadDelegate, @unchecked Se
     /// session events; called once the session drains its queue.
     @MainActor static var backgroundCompletionHandler: (() -> Void)?
 
-    private let events: Events
+    static let defaultIdentifier = "com.mbandhb.flightbag.downloads"
+
+    let events: Events
     private let stagingDirectory: URL
     private let resumeDirectory: URL
     private var session: URLSession!
     /// Serialized on the delegate queue (maxConcurrentOperationCount 1).
     private var tasksByProduct: [String: URLSessionDownloadTask] = [:]
     private var lastProgressReport: [String: Date] = [:]
+    /// Products cancelled (not paused) whose task hasn't reported completion
+    /// yet. Their cancellation error still carries resume data, which must
+    /// not be written back or the next `start` resumes what the user threw away.
+    private var cancelledProductIds: Set<String> = []
 
-    init(identifier: String = "Me.FlightBag.downloads", events: Events) {
+    init(identifier: String = DownloadService.defaultIdentifier, events: Events) {
         self.events = events
         let support = (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
             ?? FileManager.default.temporaryDirectory
@@ -72,14 +78,19 @@ final class DownloadService: NSObject, URLSessionDownloadDelegate, @unchecked Se
         }
     }
 
-    func start(_ product: DownloadProduct) {
+    /// `allowsExpensiveNetworkAccess: false` keeps a transfer off cellular
+    /// and personal hotspots (fresh starts only; resumed tasks keep the
+    /// request they were created with).
+    func start(_ product: DownloadProduct, allowsExpensiveNetworkAccess: Bool = true) {
         session.delegateQueue.addOperation { [self] in
             guard tasksByProduct[product.id] == nil else { return }
             let task: URLSessionDownloadTask
             if let resumeData = try? Data(contentsOf: resumeFile(for: product.id)) {
                 task = session.downloadTask(withResumeData: resumeData)
             } else {
-                task = session.downloadTask(with: product.url)
+                var request = URLRequest(url: product.url)
+                request.allowsExpensiveNetworkAccess = allowsExpensiveNetworkAccess
+                task = session.downloadTask(with: request)
             }
             try? FileManager.default.removeItem(at: resumeFile(for: product.id))
             task.taskDescription = product.id
@@ -103,7 +114,10 @@ final class DownloadService: NSObject, URLSessionDownloadDelegate, @unchecked Se
     /// Cancel and discard any partial transfer.
     func cancel(productId: String) {
         session.delegateQueue.addOperation { [self] in
-            tasksByProduct[productId]?.cancel()
+            if let task = tasksByProduct[productId] {
+                cancelledProductIds.insert(productId)
+                task.cancel()
+            }
             try? FileManager.default.removeItem(at: resumeFile(for: productId))
         }
     }
@@ -151,10 +165,11 @@ final class DownloadService: NSObject, URLSessionDownloadDelegate, @unchecked Se
         guard let productId = task.taskDescription else { return }
         tasksByProduct[productId] = nil
         lastProgressReport[productId] = nil
+        let wasCancelled = cancelledProductIds.remove(productId) != nil
         guard let error else { return }  // Success already went through didFinishDownloadingTo.
 
         let nsError = error as NSError
-        if let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
+        if !wasCancelled, let resumeData = nsError.userInfo[NSURLSessionDownloadTaskResumeData] as? Data {
             try? resumeData.write(to: resumeFile(for: productId), options: .atomic)
         }
         if nsError.code == NSURLErrorCancelled { return }  // pause/cancel, not a failure

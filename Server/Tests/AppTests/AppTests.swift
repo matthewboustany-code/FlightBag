@@ -22,6 +22,43 @@ import FBModels
         try await app.asyncShutdown()
     }
 
+    @Test func healthzAnswersWithoutParsingTheManifest() async throws {
+        let app = try await Application.make(.testing)
+        do {
+            try await configure(app)
+            try await app.testing().test(.GET, "healthz") { response async throws in
+                #expect(response.status == .ok)
+                #expect(response.body.string.hasPrefix("ok "))
+            }
+        } catch {
+            try await app.asyncShutdown()
+            throw error
+        }
+        try await app.asyncShutdown()
+    }
+
+    @Test func manifestIsCacheable() async throws {
+        let app = try await Application.make(.testing)
+        do {
+            try await configure(app)
+            var etag: String?
+            try await app.testing().test(.GET, "v1/manifest") { response async throws in
+                #expect(response.headers.first(name: .cacheControl) == "max-age=300")
+                etag = response.headers.first(name: .eTag)
+            }
+            // Only a checkout with a generated manifest.json has a file to tag.
+            if let etag {
+                try await app.testing().test(.GET, "v1/manifest", headers: [HTTPHeaders.Name.ifNoneMatch.description: etag]) { response async throws in
+                    #expect(response.status == .notModified)
+                }
+            }
+        } catch {
+            try await app.asyncShutdown()
+            throw error
+        }
+        try await app.asyncShutdown()
+    }
+
     /// Having no FAA credentials is the state a self-hoster starts in. It must
     /// degrade to an explicit "not configured" rather than a 500 or, worse, an
     /// empty list that reads as "no NOTAMs".
@@ -72,5 +109,38 @@ import FBModels
         let cache = NotamCache()
         await cache.store("KAUS", response("KAUS"))
         #expect(await cache.cached("KDAL") == nil)
+    }
+}
+
+@Suite struct StationCacheBoundsTests {
+    @Test func staysWithinCapacity() async {
+        let cache = StationCache<Int>(ttl: 900, capacity: 3)
+        let start = Date()
+        for (i, station) in ["KAUS", "KDAL", "KHOU", "KSAT", "KELP"].enumerated() {
+            await cache.store(station, i, now: start.addingTimeInterval(Double(i)))
+        }
+        #expect(await cache.count == 3)
+        // Oldest live entries went first.
+        #expect(await cache.cached("KAUS", now: start.addingTimeInterval(10)) == nil)
+        #expect(await cache.cached("KELP", now: start.addingTimeInterval(10)) == 4)
+    }
+
+    @Test func evictsExpiredBeforeLive() async {
+        let cache = StationCache<Int>(ttl: 100, capacity: 2)
+        let start = Date()
+        await cache.store("KAUS", 1, now: start)                          // expires at +100
+        await cache.store("KDAL", 2, now: start.addingTimeInterval(90))   // live until +190
+        await cache.store("KHOU", 3, now: start.addingTimeInterval(150))
+        // KAUS was expired, so it went; KDAL (older than KHOU but live) stays.
+        #expect(await cache.cached("KDAL", now: start.addingTimeInterval(150)) == 2)
+        #expect(await cache.count == 2)
+    }
+
+    @Test func refreshingAStationDoesNotEvictAnother() async {
+        let cache = StationCache<Int>(ttl: 900, capacity: 2)
+        await cache.store("KAUS", 1)
+        await cache.store("KDAL", 2)
+        await cache.store("KAUS", 3)
+        #expect(await cache.cached("KDAL") == 2)
     }
 }

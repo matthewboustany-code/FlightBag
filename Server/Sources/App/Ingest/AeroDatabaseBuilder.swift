@@ -51,7 +51,12 @@ struct AeroDatabaseBuilder {
                     facility_use TEXT,
                     ownership TEXT,
                     status TEXT,
-                    authority TEXT NOT NULL DEFAULT 'faa'
+                    authority TEXT NOT NULL DEFAULT 'faa',
+                    -- Map prominence, filled by buildIndexes (schema 6):
+                    -- 0 towered with a 6000 ft runway, 1 towered or 5000 ft,
+                    -- 2 the rest. Precomputed so a pan doesn't run a
+                    -- frequency and runway subquery per candidate airport.
+                    tier INTEGER
                 );
                 CREATE INDEX idx_airport_country ON airport(country);
                 CREATE INDEX idx_airport_kind ON airport(kind);
@@ -109,6 +114,7 @@ struct AeroDatabaseBuilder {
                     authority TEXT NOT NULL DEFAULT 'faa'
                 );
                 CREATE INDEX idx_navaid_id ON navaid(id);
+                CREATE INDEX idx_navaid_latlon ON navaid(lat, lon);
                 CREATE TABLE fix (
                     id TEXT NOT NULL,
                     lat REAL NOT NULL,
@@ -118,6 +124,7 @@ struct AeroDatabaseBuilder {
                     authority TEXT NOT NULL DEFAULT 'faa'
                 );
                 CREATE INDEX idx_fix_id ON fix(id);
+                CREATE INDEX idx_fix_latlon ON fix(lat, lon);
                 CREATE TABLE plate (
                     airport_id TEXT NOT NULL,
                     chart_code TEXT NOT NULL,
@@ -145,6 +152,7 @@ struct AeroDatabaseBuilder {
                     lon REAL
                 );
                 CREATE INDEX idx_airway_point ON airway_point(airway_id, location, seq);
+                CREATE INDEX idx_airway_point_loc ON airway_point(location, lat, lon);
                 CREATE TABLE procedure (
                     id INTEGER PRIMARY KEY,
                     airport_id TEXT NOT NULL,
@@ -175,7 +183,9 @@ struct AeroDatabaseBuilder {
     /// 2: airway/airway_point tables. 3: procedure/procedure_leg (CIFP).
     /// 4: worldwide coverage — `airport.iso_region`, a country index, and
     /// diacritic-folding FTS so non-US names are searchable without accents.
-    static let schemaVersion = 5
+    /// 5: normalized `airport.kind`. 6: lat/lon indexes on navaid, fix, and
+    /// airway_point for viewport queries, and a precomputed `airport.tier`.
+    static let schemaVersion = 6
 
     func setMeta(cycle: DataCycle) throws {
         try dbQueue.write { db in
@@ -205,6 +215,18 @@ struct AeroDatabaseBuilder {
             try db.execute(sql: """
                 INSERT INTO airport_rtree (id, min_lat, max_lat, min_lon, max_lon)
                 SELECT rowid, lat, lat, lon, lon FROM airport;
+                """)
+            try db.execute(sql: """
+                UPDATE airport SET tier = (
+                    SELECT CASE
+                        WHEN twr AND longest >= 6000 THEN 0
+                        WHEN twr OR longest >= 5000 THEN 1
+                        ELSE 2
+                    END
+                    FROM (SELECT
+                        EXISTS(SELECT 1 FROM frequency f WHERE f.airport_id = airport.id AND f.use = 'TWR') AS twr,
+                        COALESCE((SELECT MAX(length_ft) FROM runway rw WHERE rw.airport_id = airport.id), 0) AS longest)
+                );
                 """)
             try db.execute(sql: "ANALYZE")
         }

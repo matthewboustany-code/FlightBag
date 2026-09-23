@@ -65,7 +65,8 @@ final class StreamingChartOverlay: MKTileOverlay {
                 result(nil, error)
                 return
             }
-            result(TileResampler.upscaledQuadrant(parentTile: data, for: path, parent: parent), nil)
+            result(TileResampler.cachedUpscaledQuadrant(
+                source: self.source.streaming?.urlTemplate ?? self.source.id, parentTile: data, for: path, parent: parent), nil)
         }
     }
 }
